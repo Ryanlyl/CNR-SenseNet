@@ -1,0 +1,3 @@
+# Ignore local dataset artifacts under data/
+data/*.pkl
+data/**/*.pkl
