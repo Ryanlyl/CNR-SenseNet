@@ -1,0 +1,12 @@
+name: cnr-sensenet
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - scikit-learn
+  - matplotlib
+  - pytorch>=2.4
+  - pytorch-cuda=12.1

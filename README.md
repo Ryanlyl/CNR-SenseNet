@@ -339,10 +339,23 @@ python -m project.run_cnr_sensenet_eval --epochs 5 --batch-size 1024 --save-chec
 
 ### 3. `project/evaluate.py`
 
-目前还是占位入口，后续计划用于：
+这个脚本现在已经可以用于：
 
 - 加载已有 checkpoint
-- 复现主结果图和主结果表
+- 在准备好的数据集上重新评估
+- 导出 JSON 指标
+
+示例：
+
+```bash
+python -m project.evaluate --checkpoint project/results/baselines/20260323_194038/mlp.pt --dataset-npz project/data/processed/signal_noise_fbe832794a03.npz
+```
+
+如果评估的是 `run_cnr_sensenet_eval.py` 导出的 checkpoint，可以用统一数据入口：
+
+```bash
+python -m project.evaluate --checkpoint project/plots/cnr_sensenet_eval/cnr_sensenet_checkpoint.pt --dataset-mode bundle
+```
 
 ### 4. `project/ablation.py`
 
@@ -405,6 +418,144 @@ python -m project.run_cnr_sensenet_eval --epochs 5 --batch-size 1024 --save-chec
 9. `project/train.py`
 10. `project/run_cnr_sensenet_eval.py`
 
+## 在 GPU Cluster 上运行
+
+这个仓库已经补了 cluster 运行脚本，集中放在：
+
+- `cluster/environment.yml`
+- `cluster/setup_env.sh`
+- `cluster/jobs/*.sbatch`
+- `cluster/README.md`
+
+使用时请遵守学校 cluster 文档里的基本规则：
+
+- 不要在 login node 上跑重任务
+- 训练和推理优先用 `sbatch`
+- 申请 GPU 时必须显式写 GPU 类型，例如 `--gpus=a5000:1`
+- Python 环境按文档使用 `module load Miniforge3` 和 `source activate`
+
+### 1. 从本地同步代码和数据到 cluster
+
+推荐方式是本地 push，cluster 上 pull；数据单独传。
+
+本地：
+
+```powershell
+cd D:\Dissertation\Code\CNR-SenseNet
+git add project cluster README.md
+git commit -m "Update README and cluster workflow"
+git push origin <your-branch>
+
+scp D:\Dissertation\Code\CNR-SenseNet\project\data\processed\signal_noise_fbe832794a03.npz `
+  <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/data/processed/cluster_signal_noise.npz
+```
+
+cluster：
+
+```bash
+ssh <cluster-user>@<cluster-login-host>
+git clone https://github.com/Ryanlyl/CNR-SenseNet.git ~/CNR-SenseNet
+# 或者已存在仓库时：
+cd ~/CNR-SenseNet
+git pull --ff-only
+```
+
+如果你打算在 cluster 上重建数据缓存，还需要额外上传：
+
+```powershell
+scp D:\Dissertation\Code\CNR-SenseNet\project\data\RML2016.10a_dict.pkl `
+  <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/data/RML2016.10a_dict.pkl
+```
+
+### 2. 在 cluster 上创建环境
+
+```bash
+ssh <cluster-user>@<cluster-login-host>
+cd ~/CNR-SenseNet
+bash cluster/setup_env.sh
+```
+
+### 3. 准备缓存数据集
+
+如果你已经上传了本地生成好的 `.npz`，这一步可以跳过。
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --time=00:20:00 cluster/jobs/prepare_dataset.sbatch
+```
+
+强制重建缓存：
+
+```bash
+sbatch --time=00:20:00 cluster/jobs/prepare_dataset.sbatch --force-rebuild
+```
+
+### 4. 提交训练任务
+
+跑 baseline：
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/train_baselines.sbatch --epochs 10 --batch-size 2048
+```
+
+跑 `CNR-SenseNet`：
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/train_cnr_sensenet.sbatch --epochs 20 --batch-size 2048
+```
+
+跑多模型对比：
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=12:00:00 cluster/jobs/model_comparison.sbatch --epochs 10 --batch-size 2048
+```
+
+### 5. 提交推理 / 复评任务
+
+对已有 checkpoint 做复评：
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=01:00:00 cluster/jobs/evaluate_checkpoint.sbatch \
+  ~/CNR-SenseNet/project/results/baselines/20260323_194038/mlp.pt
+```
+
+如果是 `CNR-SenseNet` 专用 checkpoint：
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=01:00:00 cluster/jobs/evaluate_checkpoint.sbatch \
+  ~/CNR-SenseNet/project/plots/cnr_sensenet_eval/cnr_sensenet_checkpoint.pt \
+  --dataset-mode bundle
+```
+
+### 6. 查看任务和下载结果
+
+查看队列和日志：
+
+```bash
+squeue -u $USER
+tail -f slurm-cnr-train-<jobid>.out
+sacct -j <jobid>
+```
+
+把结果拉回本地：
+
+```powershell
+scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/baselines `
+  D:\Dissertation\Code\CNR-SenseNet\project\results\cluster-baselines
+```
+
+```powershell
+scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/plots/cnr_sensenet_eval `
+  D:\Dissertation\Code\CNR-SenseNet\project\plots\cnr_sensenet_eval_cluster
+```
+
+更完整的 cluster 说明见 `cluster/README.md`。
+
 ## 当前状态总结
 
 已经可用：
@@ -413,12 +564,13 @@ python -m project.run_cnr_sensenet_eval --epochs 5 --batch-size 1024 --save-chec
 - 带 `mod / label_snr / source_snr` 的标签设计
 - 代表性样本可视化导出为 PNG / PDF
 - `ED` 传统基线
+- checkpoint 复评入口 `project/evaluate.py`
 - `MLP / CNN1D / LSTM / CNR-SenseNet` 深度学习训练框架
+- cluster 环境和 `sbatch` 提交脚本
 
 仍待继续：
 
 - `CN-LSSNet` 实现
-- 通用 `evaluate.py`
 - `ablation.py`
 - `robustness.py`
 - 主结果表、主结果图的统一自动导出
