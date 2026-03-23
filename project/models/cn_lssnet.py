@@ -1,12 +1,13 @@
 """Placeholder CN-LSSNet model definition."""
 
+from project.models.base import BaseDetector
 
-class CNLSSNetModel:
-    """Placeholder CN-LSSNet model."""
 
-    def __init__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
+class CNLSSNetModel(BaseDetector):
+    """Unified CN-LSSNet interface placeholder."""
 
-    def build(self):
-        raise NotImplementedError("CNLSSNetModel.build() is not implemented yet.")
+    def fit(self, train_dataset, val_dataset=None, **kwargs):
+        raise NotImplementedError("CNLSSNetModel.fit() is not implemented yet.")
+
+    def predict_scores(self, dataset):
+        raise NotImplementedError("CNLSSNetModel.predict_scores() is not implemented yet.")
