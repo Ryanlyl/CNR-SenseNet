@@ -1,3 +1,6 @@
-# Ignore local dataset artifacts under data/
-data/*.pkl
-data/**/*.pkl
+# Ignore local dataset artifacts under project/data/
+project/data/*.pkl
+project/data/**/*.pkl
+
+__pycache__/
+*.pyc
