@@ -22,7 +22,7 @@ from project.data.gen_dataset import SignalNoiseDataset, load_signal_vs_noise_ar
 from project.models import MODEL_REGISTRY, create_model
 
 
-DEFAULT_MODELS = ["mlp", "cnn1d", "lstm"]
+DEFAULT_MODELS = ["energy_detector", "autocorr_detector", "mlp", "cnn1d", "lstm"]
 
 
 def find_default_npz() -> Path:
@@ -35,7 +35,7 @@ def find_default_npz() -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train baseline deep models on the prepared signal-vs-noise .npz dataset."
+        description="Train or calibrate baseline models on the prepared signal-vs-noise .npz dataset."
     )
     parser.add_argument("--dataset-npz", type=Path, default=None, help="Path to a prepared .npz file.")
     parser.add_argument(
@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=DEFAULT_MODELS,
         choices=sorted(MODEL_REGISTRY),
-        help="Models to train.",
+        help="Models to train or calibrate.",
     )
     parser.add_argument("--test-ratio", type=float, default=0.2, help="Held-out test ratio.")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="Validation ratio over the full dataset.")
@@ -140,7 +140,9 @@ def evaluate_model(model, dataset: SignalNoiseDataset, threshold: float) -> dict
     y_true = dataset.y.cpu().numpy().astype(np.int64)
     snr = dataset.snr.cpu().numpy().astype(np.int64)
     scores = model.predict_scores(dataset)
-    preds = (scores >= threshold).astype(np.int64)
+    requested_threshold = None if getattr(model, "prefers_internal_threshold", False) else threshold
+    threshold = model.get_evaluation_threshold(requested_threshold)
+    preds = model.predict(dataset, threshold=threshold)
 
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_true,
@@ -284,8 +286,8 @@ def run_experiment(args) -> Path:
             "model": model_name,
             "parameter_count": count_parameters(model),
             "history": {
-                "train_loss": list(getattr(model.history, "train_loss", [])),
-                "val_loss": list(getattr(model.history, "val_loss", [])),
+                "train_loss": list(getattr(getattr(model, "history", None), "train_loss", [])),
+                "val_loss": list(getattr(getattr(model, "history", None), "val_loss", [])),
             },
             "validation": evaluate_model(model, val_dataset, threshold=args.threshold)
             if val_dataset is not None

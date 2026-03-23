@@ -6,7 +6,9 @@ from inspect import Parameter, signature
 
 MODEL_REGISTRY = {
     "cnr_sensenet": ("project.CNR_SenseNet", "CNRSenseNetModel"),
-    "ed": ("project.models.ed", "SNRAdaptiveEnergyDetector"),
+    "ed": ("project.models.classical_detectors", "EnergyDetector"),
+    "energy_detector": ("project.models.classical_detectors", "EnergyDetector"),
+    "autocorr_detector": ("project.models.classical_detectors", "AutocorrelationDetector"),
     "mlp": ("project.models.mlp", "MLPModel"),
     "cnn1d": ("project.models.cnn1d", "CNN1DModel"),
     "lstm": ("project.models.lstm", "LSTMModel"),

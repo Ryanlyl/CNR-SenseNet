@@ -5,7 +5,9 @@ import argparse
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate a CNR-SenseNet model.")
-    parser.add_argument("--model", default="ed", help="Model name registered under project.models.")
+    parser.add_argument(
+        "--model", default="energy_detector", help="Model name registered under project.models."
+    )
     return parser
 
 
