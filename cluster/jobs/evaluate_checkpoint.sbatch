@@ -2,7 +2,7 @@
 #SBATCH --job-name=cnr-eval
 #SBATCH --output=slurm-%x-%j.out
 
-set -euo pipefail
+set -eo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$HOME/CNR-SenseNet}"
 ENV_NAME="${ENV_NAME:-cnr-sensenet}"
