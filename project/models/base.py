@@ -7,6 +7,8 @@ import numpy as np
 class BaseDetector(ABC):
     """Unified interface for all binary detection models in this project."""
 
+    prefers_internal_threshold = False
+
     def __init__(self, **config: Any):
         self.config = dict(config)
 
@@ -21,6 +23,16 @@ class BaseDetector(ABC):
     def predict(self, dataset, threshold=0.0):
         scores = self.predict_scores(dataset)
         return (np.asarray(scores) >= threshold).astype(np.int64)
+
+    def get_evaluation_threshold(self, threshold=None):
+        return threshold
+
+    def state_dict(self):
+        return {}
+
+    def load_state_dict(self, state_dict: dict):
+        del state_dict
+        return self
 
     def get_config(self):
         return dict(self.config)
