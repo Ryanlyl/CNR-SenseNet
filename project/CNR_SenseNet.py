@@ -44,7 +44,7 @@ class RawBranch(nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Sequential(
-            nn.Conv1d(1, 16, kernel_size=5, padding=2, bias=False),
+            nn.Conv1d(2, 16, kernel_size=5, padding=2, bias=False),
             nn.BatchNorm1d(16),
             nn.ReLU(inplace=True),
         )
@@ -63,7 +63,7 @@ class DiffBranch(nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Sequential(
-            nn.Conv1d(1, 16, kernel_size=5, padding=2, bias=False),
+            nn.Conv1d(2, 16, kernel_size=5, padding=2, bias=False),
             nn.BatchNorm1d(16),
             nn.ReLU(inplace=True),
         )
@@ -95,12 +95,15 @@ class CNRSenseNet(nn.Module):
 
     def __init__(self, signal_length: int = 256, energy_window: int = 8, dropout: float = 0.2):
         super().__init__()
-        if signal_length % energy_window != 0:
-            raise ValueError("signal_length must be divisible by energy_window")
+        if signal_length % 2 != 0:
+            raise ValueError("signal_length must be even for interleaved IQ samples")
 
         self.signal_length = int(signal_length)
+        self.num_iq_samples = self.signal_length // 2
         self.energy_window = int(energy_window)
-        self.num_windows = self.signal_length // self.energy_window
+        if self.num_iq_samples % self.energy_window != 0:
+            raise ValueError("number of IQ samples must be divisible by energy_window")
+        self.num_windows = self.num_iq_samples // self.energy_window
 
         self.raw_branch = RawBranch()
         self.diff_branch = DiffBranch()
@@ -112,23 +115,36 @@ class CNRSenseNet(nn.Module):
             nn.Linear(64, 1),
         )
 
-    def compute_local_energy(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size, _ = x.shape
-        x_reshaped = x.view(batch_size, self.num_windows, self.energy_window)
-        return torch.sum(x_reshaped**2, dim=-1)
+    def reshape_iq(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, signal_length = x.shape
+        if signal_length != self.signal_length:
+            raise ValueError(
+                f"Expected flattened input length {self.signal_length}, got {signal_length}."
+            )
+        return x.view(batch_size, self.num_iq_samples, 2).transpose(1, 2).contiguous()
+
+    def compute_local_energy(self, x_iq: torch.Tensor) -> torch.Tensor:
+        batch_size, _, num_iq_samples = x_iq.shape
+        if num_iq_samples != self.num_iq_samples:
+            raise ValueError(
+                f"Expected {self.num_iq_samples} IQ samples, got {num_iq_samples}."
+            )
+        point_energy = torch.sum(x_iq**2, dim=1)
+        energy_windows = point_energy.view(batch_size, self.num_windows, self.energy_window)
+        return torch.sum(energy_windows, dim=-1)
 
     @staticmethod
-    def compute_diff(x: torch.Tensor) -> torch.Tensor:
-        return x[:, 1:] - x[:, :-1]
+    def compute_diff(x_iq: torch.Tensor) -> torch.Tensor:
+        return x_iq[:, :, 1:] - x_iq[:, :, :-1]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_raw = x.unsqueeze(1)
-        h_raw = self.raw_branch(x_raw)
+        x_iq = self.reshape_iq(x)
+        h_raw = self.raw_branch(x_iq)
 
-        x_energy = self.compute_local_energy(x)
+        x_energy = self.compute_local_energy(x_iq)
         h_energy = self.energy_branch(x_energy)
 
-        x_diff = self.compute_diff(x).unsqueeze(1)
+        x_diff = self.compute_diff(x_iq)
         h_diff = self.diff_branch(x_diff)
 
         features = torch.cat([h_raw, h_energy, h_diff], dim=1)
