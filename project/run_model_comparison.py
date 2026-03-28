@@ -92,6 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=['train', 'val'],
         default='val',
     )
+    parser.add_argument(
+        '--snr-loss-weighting',
+        choices=['none', 'two_band'],
+        default='two_band',
+    )
+    parser.add_argument('--low-snr-cutoff', type=int, default=-10)
+    parser.add_argument('--low-snr-positive-weight', type=float, default=3.0)
+    parser.add_argument('--mid-snr-cutoff', type=int, default=-6)
+    parser.add_argument('--mid-snr-positive-weight', type=float, default=2.0)
     parser.add_argument('--score-batch-size', type=int, default=16384)
     parser.add_argument(
         '--energy-statistic',
@@ -180,6 +189,11 @@ def build_model(model_name: str, args, signal_length: int):
         common_kwargs['score_mode'] = args.autocorr_score_mode
     if model_name == 'cnr_sensenet':
         common_kwargs['energy_window'] = args.energy_window
+        common_kwargs['snr_loss_weighting'] = args.snr_loss_weighting
+        common_kwargs['low_snr_cutoff'] = args.low_snr_cutoff
+        common_kwargs['low_snr_positive_weight'] = args.low_snr_positive_weight
+        common_kwargs['mid_snr_cutoff'] = args.mid_snr_cutoff
+        common_kwargs['mid_snr_positive_weight'] = args.mid_snr_positive_weight
     return create_model(model_name, **common_kwargs)
 
 
@@ -612,6 +626,11 @@ def main() -> None:
             'threshold_mode': args.threshold_mode,
             'target_pfa': float(args.target_pfa),
             'calibration_split': args.calibration_split,
+            'snr_loss_weighting': args.snr_loss_weighting,
+            'low_snr_cutoff': int(args.low_snr_cutoff),
+            'low_snr_positive_weight': float(args.low_snr_positive_weight),
+            'mid_snr_cutoff': int(args.mid_snr_cutoff),
+            'mid_snr_positive_weight': float(args.mid_snr_positive_weight),
             'score_batch_size': int(args.score_batch_size),
             'energy_statistic': args.energy_statistic,
             'autocorr_max_lag': int(args.autocorr_max_lag),

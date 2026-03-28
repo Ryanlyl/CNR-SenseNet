@@ -64,6 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=['train', 'val'],
         default='val',
     )
+    parser.add_argument(
+        '--snr-loss-weighting',
+        choices=['none', 'two_band'],
+        default='two_band',
+    )
+    parser.add_argument('--low-snr-cutoff', type=int, default=-10)
+    parser.add_argument('--low-snr-positive-weight', type=float, default=3.0)
+    parser.add_argument('--mid-snr-cutoff', type=int, default=-6)
+    parser.add_argument('--mid-snr-positive-weight', type=float, default=2.0)
     parser.add_argument('--decision-threshold', type=float, default=0.5)
     parser.add_argument('--device', default=None)
     parser.add_argument(
@@ -333,6 +342,11 @@ def maybe_save_checkpoint(model, output_path: Path, args, summary: dict) -> None
             'threshold_mode': args.threshold_mode,
             'target_pfa': args.target_pfa,
             'calibration_split': args.calibration_split,
+            'snr_loss_weighting': args.snr_loss_weighting,
+            'low_snr_cutoff': args.low_snr_cutoff,
+            'low_snr_positive_weight': args.low_snr_positive_weight,
+            'mid_snr_cutoff': args.mid_snr_cutoff,
+            'mid_snr_positive_weight': args.mid_snr_positive_weight,
             'decision_threshold': summary['overall_metrics']['threshold'],
         },
         'metrics': summary['overall_metrics'],
@@ -387,6 +401,11 @@ def main() -> None:
         threshold_mode=args.threshold_mode,
         target_pfa=args.target_pfa,
         calibration_split=args.calibration_split,
+        snr_loss_weighting=args.snr_loss_weighting,
+        low_snr_cutoff=args.low_snr_cutoff,
+        low_snr_positive_weight=args.low_snr_positive_weight,
+        mid_snr_cutoff=args.mid_snr_cutoff,
+        mid_snr_positive_weight=args.mid_snr_positive_weight,
         device=args.device,
     )
 
@@ -463,6 +482,11 @@ def main() -> None:
             'threshold_mode': args.threshold_mode,
             'target_pfa': float(args.target_pfa),
             'calibration_split': args.calibration_split,
+            'snr_loss_weighting': args.snr_loss_weighting,
+            'low_snr_cutoff': int(args.low_snr_cutoff),
+            'low_snr_positive_weight': float(args.low_snr_positive_weight),
+            'mid_snr_cutoff': int(args.mid_snr_cutoff),
+            'mid_snr_positive_weight': float(args.mid_snr_positive_weight),
         },
         'timing_seconds': {
             'train': float(train_seconds),

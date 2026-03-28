@@ -174,9 +174,15 @@ class CNRSenseNetModel(BaseDetector):
         target_pfa: float = 0.1,
         calibration_split: str = "val",
         decision_threshold: float | None = None,
+        snr_loss_weighting: str | None = "two_band",
+        low_snr_cutoff: int = -10,
+        low_snr_positive_weight: float = 3.0,
+        mid_snr_cutoff: int = -6,
+        mid_snr_positive_weight: float = 2.0,
         device: str | None = None,
     ):
         threshold_mode = self._normalize_threshold_mode(threshold_mode)
+        snr_loss_weighting = self._normalize_snr_loss_weighting(snr_loss_weighting)
         super().__init__(
             signal_length=signal_length,
             energy_window=energy_window,
@@ -190,6 +196,11 @@ class CNRSenseNetModel(BaseDetector):
             target_pfa=target_pfa,
             calibration_split=calibration_split,
             decision_threshold=decision_threshold,
+            snr_loss_weighting=snr_loss_weighting,
+            low_snr_cutoff=low_snr_cutoff,
+            low_snr_positive_weight=low_snr_positive_weight,
+            mid_snr_cutoff=mid_snr_cutoff,
+            mid_snr_positive_weight=mid_snr_positive_weight,
             device=device,
         )
         self.signal_length = signal_length
@@ -204,6 +215,12 @@ class CNRSenseNetModel(BaseDetector):
         self.target_pfa = float(target_pfa)
         self.calibration_split = str(calibration_split)
         self.decision_threshold = None if decision_threshold is None else float(decision_threshold)
+        self.snr_loss_weighting = snr_loss_weighting
+        self.low_snr_cutoff = int(low_snr_cutoff)
+        self.low_snr_positive_weight = float(low_snr_positive_weight)
+        self.mid_snr_cutoff = int(mid_snr_cutoff)
+        self.mid_snr_positive_weight = float(mid_snr_positive_weight)
+        self._validate_snr_loss_config()
         self.prefers_internal_threshold = self.decision_threshold is not None and self.threshold_mode is not None
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.model: CNRSenseNet | None = None
@@ -220,6 +237,23 @@ class CNRSenseNetModel(BaseDetector):
         return normalized
 
     @staticmethod
+    def _normalize_snr_loss_weighting(snr_loss_weighting: str | None) -> str:
+        if snr_loss_weighting is None:
+            return "none"
+        normalized = str(snr_loss_weighting).strip().lower()
+        if normalized in {"", "none", "off", "disabled", "fixed"}:
+            return "none"
+        if normalized in {"two_band", "two-band", "2band"}:
+            return "two_band"
+        raise ValueError("snr_loss_weighting must be one of: none, two_band.")
+
+    def _validate_snr_loss_config(self) -> None:
+        if self.mid_snr_cutoff < self.low_snr_cutoff:
+            raise ValueError("mid_snr_cutoff must be greater than or equal to low_snr_cutoff.")
+        if self.low_snr_positive_weight <= 0.0 or self.mid_snr_positive_weight <= 0.0:
+            raise ValueError("Positive sample weights must be greater than 0.")
+
+    @staticmethod
     def _to_numpy(values) -> np.ndarray:
         if isinstance(values, torch.Tensor):
             return values.detach().cpu().numpy()
@@ -232,6 +266,12 @@ class CNRSenseNetModel(BaseDetector):
         return batch[0], batch[1]
 
     @staticmethod
+    def _extract_snr(batch):
+        if isinstance(batch, (list, tuple)) and len(batch) >= 3:
+            return batch[2]
+        return None
+
+    @staticmethod
     def _prepare_inputs(x: torch.Tensor) -> torch.Tensor:
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float32)
@@ -242,6 +282,14 @@ class CNRSenseNetModel(BaseDetector):
         if not isinstance(y, torch.Tensor):
             y = torch.tensor(y, dtype=torch.float32)
         return y.float().view(-1)
+
+    @staticmethod
+    def _prepare_snr(snr: torch.Tensor | None) -> torch.Tensor | None:
+        if snr is None:
+            return None
+        if not isinstance(snr, torch.Tensor):
+            snr = torch.tensor(snr, dtype=torch.int64)
+        return snr.to(dtype=torch.int64).view(-1)
 
     def _infer_signal_length(self, dataset) -> int:
         sample = dataset[0]
@@ -263,6 +311,34 @@ class CNRSenseNetModel(BaseDetector):
         if self.calibration_split == "val" and val_dataset is not None:
             return val_dataset, "val"
         return train_dataset, "train"
+
+    def _compute_sample_weights(
+        self,
+        y: torch.Tensor,
+        snr: torch.Tensor | None,
+        device: torch.device,
+    ) -> torch.Tensor:
+        weights = torch.ones_like(y, dtype=torch.float32, device=device)
+        if self.snr_loss_weighting != "two_band" or snr is None:
+            return weights
+
+        positive_mask = y >= 0.5
+        low_mask = positive_mask & (snr <= self.low_snr_cutoff)
+        mid_mask = positive_mask & (snr > self.low_snr_cutoff) & (snr <= self.mid_snr_cutoff)
+
+        if self.low_snr_positive_weight != 1.0:
+            weights = torch.where(
+                low_mask,
+                torch.full_like(weights, self.low_snr_positive_weight),
+                weights,
+            )
+        if self.mid_snr_positive_weight != 1.0:
+            weights = torch.where(
+                mid_mask,
+                torch.full_like(weights, self.mid_snr_positive_weight),
+                weights,
+            )
+        return weights
 
     def _ensure_model(self, signal_length: int | None = None) -> CNRSenseNet:
         inferred_length = int(signal_length or self.signal_length or 0)
@@ -298,11 +374,17 @@ class CNRSenseNetModel(BaseDetector):
         with context:
             for batch in loader:
                 x, y = self._unpack_batch(batch)
+                snr = self._extract_snr(batch)
                 x = self._prepare_inputs(x).to(self.device)
                 y = self._prepare_targets(y).to(self.device)
+                snr = self._prepare_snr(snr)
+                if snr is not None:
+                    snr = snr.to(self.device)
 
                 logits = self.model(x)
-                loss = criterion(logits, y)
+                losses = criterion(logits, y)
+                sample_weights = self._compute_sample_weights(y, snr, device=y.device)
+                loss = torch.sum(losses * sample_weights) / torch.clamp(sample_weights.sum(), min=1.0)
 
                 if is_train:
                     optimizer.zero_grad(set_to_none=True)
@@ -323,6 +405,17 @@ class CNRSenseNetModel(BaseDetector):
         threshold_mode = self._normalize_threshold_mode(kwargs.get("threshold_mode", self.threshold_mode))
         target_pfa = float(kwargs.get("target_pfa", self.target_pfa))
         calibration_split = str(kwargs.get("calibration_split", self.calibration_split))
+        snr_loss_weighting = self._normalize_snr_loss_weighting(
+            kwargs.get("snr_loss_weighting", self.snr_loss_weighting)
+        )
+        low_snr_cutoff = int(kwargs.get("low_snr_cutoff", self.low_snr_cutoff))
+        low_snr_positive_weight = float(
+            kwargs.get("low_snr_positive_weight", self.low_snr_positive_weight)
+        )
+        mid_snr_cutoff = int(kwargs.get("mid_snr_cutoff", self.mid_snr_cutoff))
+        mid_snr_positive_weight = float(
+            kwargs.get("mid_snr_positive_weight", self.mid_snr_positive_weight)
+        )
         verbose = bool(kwargs.get("verbose", False))
 
         if calibration_split not in {"train", "val"}:
@@ -332,17 +425,28 @@ class CNRSenseNetModel(BaseDetector):
         self.threshold_mode = threshold_mode
         self.target_pfa = target_pfa
         self.calibration_split = calibration_split
+        self.snr_loss_weighting = snr_loss_weighting
+        self.low_snr_cutoff = low_snr_cutoff
+        self.low_snr_positive_weight = low_snr_positive_weight
+        self.mid_snr_cutoff = mid_snr_cutoff
+        self.mid_snr_positive_weight = mid_snr_positive_weight
+        self._validate_snr_loss_config()
         self.config["lr"] = lr
         self.config["batch_size"] = batch_size
         self.config["weight_decay"] = weight_decay
         self.config["threshold_mode"] = threshold_mode
         self.config["target_pfa"] = target_pfa
         self.config["calibration_split"] = calibration_split
+        self.config["snr_loss_weighting"] = snr_loss_weighting
+        self.config["low_snr_cutoff"] = low_snr_cutoff
+        self.config["low_snr_positive_weight"] = low_snr_positive_weight
+        self.config["mid_snr_cutoff"] = mid_snr_cutoff
+        self.config["mid_snr_positive_weight"] = mid_snr_positive_weight
 
         signal_length = self.signal_length or self._infer_signal_length(train_dataset)
         self._ensure_model(signal_length=signal_length)
 
-        criterion = nn.BCEWithLogitsLoss()
+        criterion = nn.BCEWithLogitsLoss(reduction="none")
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         train_loader = self._make_loader(train_dataset, shuffle=True)
         val_loader = self._make_loader(val_dataset, shuffle=False) if val_dataset is not None else None
