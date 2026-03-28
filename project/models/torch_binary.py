@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from project.models.base import BaseDetector
+from project.models.base import BaseDetector, CalibratedThresholdResult, fit_binary_threshold
 
 
 @dataclass(slots=True)
@@ -29,8 +29,13 @@ class TorchBinaryClassifier(BaseDetector):
         epochs: int = 5,
         weight_decay: float = 0.0,
         threshold: float = 0.5,
+        threshold_mode: str | None = None,
+        target_pfa: float = 0.1,
+        calibration_split: str = "val",
+        decision_threshold: float | None = None,
         device: str | None = None,
     ):
+        threshold_mode = self._normalize_threshold_mode(threshold_mode)
         super().__init__(
             signal_length=signal_length,
             lr=lr,
@@ -38,6 +43,10 @@ class TorchBinaryClassifier(BaseDetector):
             epochs=epochs,
             weight_decay=weight_decay,
             threshold=threshold,
+            threshold_mode=threshold_mode,
+            target_pfa=target_pfa,
+            calibration_split=calibration_split,
+            decision_threshold=decision_threshold,
             device=device,
         )
         self.signal_length = signal_length
@@ -46,9 +55,30 @@ class TorchBinaryClassifier(BaseDetector):
         self.epochs = int(epochs)
         self.weight_decay = float(weight_decay)
         self.threshold = float(threshold)
+        self.threshold_mode = threshold_mode
+        self.target_pfa = float(target_pfa)
+        self.calibration_split = str(calibration_split)
+        self.decision_threshold = None if decision_threshold is None else float(decision_threshold)
+        self.prefers_internal_threshold = self.decision_threshold is not None and self.threshold_mode is not None
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.model: nn.Module | None = None
         self.history = TrainingHistory(train_loss=[], val_loss=[])
+        self.fit_result: CalibratedThresholdResult | None = None
+
+    @staticmethod
+    def _normalize_threshold_mode(threshold_mode: str | None) -> str | None:
+        if threshold_mode is None:
+            return None
+        normalized = str(threshold_mode).strip().lower()
+        if normalized in {"", "none", "fixed"}:
+            return None
+        return normalized
+
+    @staticmethod
+    def _to_numpy(values) -> np.ndarray:
+        if isinstance(values, torch.Tensor):
+            return values.detach().cpu().numpy()
+        return np.asarray(values)
 
     @staticmethod
     def _unpack_batch(batch):
@@ -73,6 +103,20 @@ class TorchBinaryClassifier(BaseDetector):
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float32)
         return int(x.numel())
+
+    def _dataset_labels(self, dataset) -> np.ndarray:
+        if hasattr(dataset, "y"):
+            labels = self._to_numpy(dataset.y)
+        elif hasattr(dataset, "dataset") and hasattr(dataset.dataset, "y") and hasattr(dataset, "indices"):
+            labels = self._to_numpy(dataset.dataset.y)[np.asarray(dataset.indices, dtype=np.int64)]
+        else:
+            labels = [dataset[idx][1] for idx in range(len(dataset))]
+        return self._to_numpy(labels).reshape(-1).astype(np.int64, copy=False)
+
+    def _choose_calibration_dataset(self, train_dataset, val_dataset):
+        if self.calibration_split == "val" and val_dataset is not None:
+            return val_dataset, "val"
+        return train_dataset, "train"
 
     @abstractmethod
     def build_network(self, signal_length: int) -> nn.Module:
@@ -137,9 +181,25 @@ class TorchBinaryClassifier(BaseDetector):
         batch_size = int(kwargs.get("batch_size", self.batch_size))
         weight_decay = float(kwargs.get("weight_decay", self.weight_decay))
         patience = kwargs.get("patience")
+        threshold_mode = self._normalize_threshold_mode(kwargs.get("threshold_mode", self.threshold_mode))
+        target_pfa = float(kwargs.get("target_pfa", self.target_pfa))
+        calibration_split = str(kwargs.get("calibration_split", self.calibration_split))
         verbose = bool(kwargs.get("verbose", False))
 
+        if calibration_split not in {"train", "val"}:
+            raise ValueError("calibration_split must be either 'train' or 'val'.")
+
         self.batch_size = batch_size
+        self.threshold_mode = threshold_mode
+        self.target_pfa = target_pfa
+        self.calibration_split = calibration_split
+        self.config["lr"] = lr
+        self.config["batch_size"] = batch_size
+        self.config["weight_decay"] = weight_decay
+        self.config["threshold_mode"] = threshold_mode
+        self.config["target_pfa"] = target_pfa
+        self.config["calibration_split"] = calibration_split
+
         signal_length = self.signal_length or self._infer_signal_length(train_dataset)
         self._ensure_model(signal_length=signal_length)
 
@@ -185,6 +245,38 @@ class TorchBinaryClassifier(BaseDetector):
 
         if val_loader is not None:
             self.model.load_state_dict(best_state)
+
+        self.fit_result = None
+        self.decision_threshold = None
+        self.prefers_internal_threshold = False
+        self.config["decision_threshold"] = None
+
+        if self.threshold_mode is not None:
+            calibration_dataset, calibration_source = self._choose_calibration_dataset(
+                train_dataset,
+                val_dataset,
+            )
+            calibration_scores = self.predict_scores(calibration_dataset)
+            calibration_labels = self._dataset_labels(calibration_dataset)
+            self.fit_result = fit_binary_threshold(
+                scores=calibration_scores,
+                labels=calibration_labels,
+                threshold_mode=self.threshold_mode,
+                target_pfa=self.target_pfa,
+                calibration_source=calibration_source,
+            )
+            self.decision_threshold = float(self.fit_result.threshold)
+            self.prefers_internal_threshold = True
+            self.config["decision_threshold"] = self.decision_threshold
+
+            if verbose:
+                print(
+                    f"[Threshold Calibration] threshold={self.decision_threshold:.6f} "
+                    f"Pd={self.fit_result.Pd:.4f} Pfa={self.fit_result.Pfa:.4f} "
+                    f"BA={self.fit_result.balanced_accuracy:.4f} "
+                    f"({self.fit_result.calibration_source})"
+                )
+
         return self
 
     def predict_logits(self, dataset):
@@ -213,8 +305,15 @@ class TorchBinaryClassifier(BaseDetector):
         scores = self.predict_scores(dataset)
         return np.column_stack([1.0 - scores, scores])
 
+    def get_evaluation_threshold(self, threshold=None):
+        if threshold is not None:
+            return float(threshold)
+        if self.prefers_internal_threshold and self.decision_threshold is not None:
+            return float(self.decision_threshold)
+        return float(self.threshold)
+
     def predict(self, dataset, threshold=None):
-        threshold = self.threshold if threshold is None else float(threshold)
+        threshold = self.get_evaluation_threshold(threshold)
         scores = self.predict_scores(dataset)
         return (scores >= threshold).astype(np.int64)
 
@@ -229,4 +328,5 @@ class TorchBinaryClassifier(BaseDetector):
                 raise ValueError("Set signal_length before loading weights.")
             self._ensure_model(signal_length=self.signal_length)
         self.model.load_state_dict(state_dict)
+        self.prefers_internal_threshold = self.decision_threshold is not None and self.threshold_mode is not None
         return self

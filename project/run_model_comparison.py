@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import csv
@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--energy-window', type=int, default=8)
     parser.add_argument(
         '--threshold-mode',
-        choices=['balanced_acc', 'youden', 'target_pfa'],
+        choices=['fixed', 'balanced_acc', 'youden', 'target_pfa'],
         default='balanced_acc',
     )
     parser.add_argument('--target-pfa', type=float, default=0.1)
@@ -159,7 +159,13 @@ def build_model(model_name: str, args, signal_length: int):
         'device': args.device,
     }
     if model_name in {'cnr_sensenet', 'mlp', 'cnn1d', 'lstm'}:
-        common_kwargs['dropout'] = args.dropout
+        common_kwargs.update(
+            dropout=args.dropout,
+            threshold=args.decision_threshold,
+            threshold_mode=args.threshold_mode,
+            target_pfa=args.target_pfa,
+            calibration_split=args.calibration_split,
+        )
     if model_name in {'energy_detector', 'autocorr_detector'}:
         common_kwargs.update(
             threshold_mode=args.threshold_mode,

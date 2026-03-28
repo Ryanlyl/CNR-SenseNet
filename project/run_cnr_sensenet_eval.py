@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import csv
@@ -53,6 +53,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--weight-decay', type=float, default=0.0)
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--energy-window', type=int, default=8)
+    parser.add_argument(
+        '--threshold-mode',
+        choices=['fixed', 'balanced_acc', 'youden', 'target_pfa'],
+        default='balanced_acc',
+    )
+    parser.add_argument('--target-pfa', type=float, default=0.1)
+    parser.add_argument(
+        '--calibration-split',
+        choices=['train', 'val'],
+        default='val',
+    )
     parser.add_argument('--decision-threshold', type=float, default=0.5)
     parser.add_argument('--device', default=None)
     parser.add_argument(
@@ -318,6 +329,11 @@ def maybe_save_checkpoint(model, output_path: Path, args, summary: dict) -> None
             'batch_size': args.batch_size,
             'epochs': args.epochs,
             'weight_decay': args.weight_decay,
+            'threshold': args.decision_threshold,
+            'threshold_mode': args.threshold_mode,
+            'target_pfa': args.target_pfa,
+            'calibration_split': args.calibration_split,
+            'decision_threshold': summary['overall_metrics']['threshold'],
         },
         'metrics': summary['overall_metrics'],
         'state_dict': model.state_dict(),
@@ -367,27 +383,41 @@ def main() -> None:
         batch_size=args.batch_size,
         epochs=args.epochs,
         weight_decay=args.weight_decay,
+        threshold=args.decision_threshold,
+        threshold_mode=args.threshold_mode,
+        target_pfa=args.target_pfa,
+        calibration_split=args.calibration_split,
         device=args.device,
     )
 
     train_start = time.perf_counter()
-    model.fit(train_dataset, val_dataset=val_dataset, verbose=args.verbose)
+    model.fit(
+        train_dataset,
+        val_dataset=val_dataset,
+        threshold_mode=args.threshold_mode,
+        target_pfa=args.target_pfa,
+        calibration_split=args.calibration_split,
+        verbose=args.verbose,
+    )
     train_seconds = time.perf_counter() - train_start
 
     eval_start = time.perf_counter()
     test_scores = np.asarray(model.predict_scores(bundle.test_dataset), dtype=np.float64)
     eval_seconds = time.perf_counter() - eval_start
 
+    requested_threshold = None if getattr(model, 'prefers_internal_threshold', False) else args.decision_threshold
+    eval_threshold = float(model.get_evaluation_threshold(requested_threshold))
+
     overall_metrics, test_pred = compute_metrics(
         bundle.test_arrays['y'],
         test_scores,
-        threshold=args.decision_threshold,
+        threshold=eval_threshold,
     )
     snr_metrics = compute_metrics_by_snr(
         bundle.test_arrays['y'],
         test_scores,
         bundle.test_arrays['snr'],
-        threshold=args.decision_threshold,
+        threshold=eval_threshold,
     )
 
     history = getattr(model, 'history', None)
@@ -430,6 +460,9 @@ def main() -> None:
             'dropout': float(args.dropout),
             'energy_window': int(args.energy_window),
             'decision_threshold': float(args.decision_threshold),
+            'threshold_mode': args.threshold_mode,
+            'target_pfa': float(args.target_pfa),
+            'calibration_split': args.calibration_split,
         },
         'timing_seconds': {
             'train': float(train_seconds),
@@ -467,7 +500,7 @@ def main() -> None:
     )
     print(
         f'Timing: train={train_seconds:.2f}s, evaluate={eval_seconds:.2f}s, '
-        f'threshold={args.decision_threshold:.4f}'
+        f'threshold={eval_threshold:.4f}'
     )
     print('Saved artifacts:')
     for name, path in artifact_paths.items():
