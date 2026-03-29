@@ -2,7 +2,7 @@
 #SBATCH --job-name=cnr-ablation
 #SBATCH --output=slurm-%x-%j.out
 
-set -eo pipefail
+set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$HOME/CNR-SenseNet}"
 ENV_NAME="${ENV_NAME:-cnr-sensenet}"
@@ -16,7 +16,8 @@ cd "$REPO_ROOT"
 mkdir -p "$(dirname "$CACHE_PATH")" "$OUTPUT_DIR"
 
 module load Miniforge3
-source activate "$ENV_NAME"
+eval "$(conda shell.bash hook)"
+conda activate "$ENV_NAME"
 
 python -m project.ablation \
   --pkl-path "$PKL_PATH" \
@@ -24,6 +25,8 @@ python -m project.ablation \
   --output-dir "$OUTPUT_DIR" \
   --output-prefix "$OUTPUT_PREFIX" \
   --device cuda \
+  --aux-branch-type autocorr \
+  --autocorr-max-lag 8 \
   --seeds $SEEDS \
   --lr 1e-3 \
   --weight-decay 0.0 \

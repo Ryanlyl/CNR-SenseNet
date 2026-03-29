@@ -63,7 +63,7 @@ VARIANT_SPECS = [
     },
     {
         "name": "wo_diff",
-        "label": "w/o Diff",
+        "label": "w/o Aux",
         "color": "#c92a2a",
         "linestyle": ":",
         "use_raw_branch": True,
@@ -122,6 +122,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--energy-window", type=int, default=8)
+    parser.add_argument("--aux-branch-type", choices=["diff", "autocorr"], default="autocorr")
+    parser.add_argument("--autocorr-max-lag", type=int, default=8)
     parser.add_argument(
         "--threshold-mode",
         choices=["fixed", "balanced_acc", "youden", "target_pfa"],
@@ -192,14 +194,14 @@ def mean_std(values: list[float]) -> tuple[float, float]:
     return float(np.nanmean(array)), float(np.nanstd(array))
 
 
-def branch_signature(spec: dict) -> str:
+def branch_signature(spec: dict, aux_branch_type: str = "diff") -> str:
     names: list[str] = []
     if spec["use_raw_branch"]:
         names.append("Raw")
     if spec["use_energy_branch"]:
         names.append("Energy")
     if spec["use_diff_branch"]:
-        names.append("Diff")
+        names.append("Autocorr" if aux_branch_type == "autocorr" else "Diff")
     return " + ".join(names)
 
 
@@ -280,6 +282,8 @@ def build_variant_model(args, signal_length: int, spec: dict):
         signal_length=signal_length,
         energy_window=args.energy_window,
         dropout=args.dropout,
+        aux_branch_type=args.aux_branch_type,
+        autocorr_max_lag=args.autocorr_max_lag,
         use_raw_branch=spec["use_raw_branch"],
         use_energy_branch=spec["use_energy_branch"],
         use_diff_branch=spec["use_diff_branch"],
@@ -381,7 +385,7 @@ def build_seed_rows(results: list[dict]) -> list[dict]:
     return rows
 
 
-def aggregate_overall_results(results: list[dict]) -> list[dict]:
+def aggregate_overall_results(results: list[dict], aux_branch_type: str = "diff") -> list[dict]:
     rows: list[dict] = []
     for spec in VARIANT_SPECS:
         variant_runs = [item for item in results if item["variant"] == spec["name"]]
@@ -391,7 +395,7 @@ def aggregate_overall_results(results: list[dict]) -> list[dict]:
         row = {
             "variant": spec["name"],
             "variant_label": spec["label"],
-            "branches": branch_signature(spec),
+            "branches": branch_signature(spec, aux_branch_type),
             "seeds": int(len(variant_runs)),
         }
         for metric_key in SUMMARY_METRICS:
@@ -409,7 +413,7 @@ def aggregate_overall_results(results: list[dict]) -> list[dict]:
     return rows
 
 
-def aggregate_snr_results(results: list[dict]) -> list[dict]:
+def aggregate_snr_results(results: list[dict], aux_branch_type: str = "diff") -> list[dict]:
     rows: list[dict] = []
     metric_keys = [
         "accuracy",
@@ -438,7 +442,7 @@ def aggregate_snr_results(results: list[dict]) -> list[dict]:
             row = {
                 "variant": spec["name"],
                 "variant_label": spec["label"],
-                "branches": branch_signature(spec),
+                "branches": branch_signature(spec, aux_branch_type),
                 "snr": int(snr_value),
                 "seeds": int(len(grouped)),
             }
@@ -451,7 +455,7 @@ def aggregate_snr_results(results: list[dict]) -> list[dict]:
     return rows
 
 
-def aggregate_band_results(results: list[dict]) -> list[dict]:
+def aggregate_band_results(results: list[dict], aux_branch_type: str = "diff") -> list[dict]:
     rows: list[dict] = []
     metric_keys = [
         "accuracy",
@@ -482,7 +486,7 @@ def aggregate_band_results(results: list[dict]) -> list[dict]:
             row = {
                 "variant": spec["name"],
                 "variant_label": spec["label"],
-                "branches": branch_signature(spec),
+                "branches": branch_signature(spec, aux_branch_type),
                 "snr_band": grouped[0]["snr_band"],
                 "snr_band_label": grouped[0]["snr_band_label"],
                 "snr_band_order": int(band_order),
@@ -714,7 +718,7 @@ def main() -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         for spec in VARIANT_SPECS:
-            print(f"\n=== Seed {seed} | {spec['label']} ({branch_signature(spec)}) ===")
+            print(f"\n=== Seed {seed} | {spec['label']} ({branch_signature(spec, args.aux_branch_type)}) ===")
             model = build_variant_model(args, signal_length=bundle.input_dim, spec=spec)
 
             train_start = time.perf_counter()
@@ -754,11 +758,13 @@ def main() -> None:
                 "seed": int(seed),
                 "variant": spec["name"],
                 "variant_label": spec["label"],
-                "branch_signature": branch_signature(spec),
+                "branch_signature": branch_signature(spec, args.aux_branch_type),
                 "branches": {
                     "use_raw_branch": bool(spec["use_raw_branch"]),
                     "use_energy_branch": bool(spec["use_energy_branch"]),
                     "use_diff_branch": bool(spec["use_diff_branch"]),
+                    "aux_branch_type": args.aux_branch_type,
+                    "autocorr_max_lag": int(args.autocorr_max_lag),
                 },
                 "parameter_count": int(count_parameters(model)),
                 "train_seconds": float(train_seconds),
@@ -795,9 +801,9 @@ def main() -> None:
                 torch.cuda.empty_cache()
 
     seed_rows = build_seed_rows(results)
-    summary_rows = aggregate_overall_results(results)
-    snr_rows = aggregate_snr_results(results)
-    band_rows = aggregate_band_results(results)
+    summary_rows = aggregate_overall_results(results, args.aux_branch_type)
+    snr_rows = aggregate_snr_results(results, args.aux_branch_type)
+    band_rows = aggregate_band_results(results, args.aux_branch_type)
 
     artifact_paths = {
         "summary_json": output_dir / f"{args.output_prefix}_summary.json",
@@ -821,6 +827,8 @@ def main() -> None:
             "weight_decay": float(args.weight_decay),
             "dropout": float(args.dropout),
             "energy_window": int(args.energy_window),
+            "aux_branch_type": args.aux_branch_type,
+            "autocorr_max_lag": int(args.autocorr_max_lag),
             "decision_threshold": float(args.decision_threshold),
             "threshold_mode": args.threshold_mode,
             "target_pfa": float(args.target_pfa),
@@ -842,10 +850,12 @@ def main() -> None:
             {
                 "name": spec["name"],
                 "label": spec["label"],
-                "branches": branch_signature(spec),
+                "branches": branch_signature(spec, args.aux_branch_type),
                 "use_raw_branch": bool(spec["use_raw_branch"]),
                 "use_energy_branch": bool(spec["use_energy_branch"]),
                 "use_diff_branch": bool(spec["use_diff_branch"]),
+                "aux_branch_type": args.aux_branch_type,
+                "autocorr_max_lag": int(args.autocorr_max_lag),
             }
             for spec in VARIANT_SPECS
         ],

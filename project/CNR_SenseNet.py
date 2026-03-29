@@ -11,6 +11,17 @@ from torch.utils.data import DataLoader
 from project.models.base import BaseDetector, CalibratedThresholdResult, fit_binary_threshold
 
 
+def normalize_aux_branch_type(aux_branch_type: str | None) -> str:
+    if aux_branch_type is None:
+        return "diff"
+    normalized = str(aux_branch_type).strip().lower()
+    if normalized in {"", "default", "legacy"}:
+        return "diff"
+    if normalized in {"diff", "autocorr"}:
+        return normalized
+    raise ValueError("aux_branch_type must be one of: diff, autocorr.")
+
+
 class DSConv1dBlock(nn.Module):
     """Depthwise separable 1D convolution block."""
 
@@ -61,6 +72,8 @@ class RawBranch(nn.Module):
 
 
 class DiffBranch(nn.Module):
+    """Shared lightweight branch used for auxiliary temporal features."""
+
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Sequential(
@@ -99,6 +112,8 @@ class CNRSenseNet(nn.Module):
         signal_length: int = 256,
         energy_window: int = 8,
         dropout: float = 0.2,
+        aux_branch_type: str = "diff",
+        autocorr_max_lag: int = 8,
         use_raw_branch: bool = True,
         use_energy_branch: bool = True,
         use_diff_branch: bool = True,
@@ -110,8 +125,12 @@ class CNRSenseNet(nn.Module):
         self.signal_length = int(signal_length)
         self.num_iq_samples = self.signal_length // 2
         self.energy_window = int(energy_window)
+        self.aux_branch_type = normalize_aux_branch_type(aux_branch_type)
+        self.autocorr_max_lag = int(autocorr_max_lag)
         if self.num_iq_samples % self.energy_window != 0:
             raise ValueError("number of IQ samples must be divisible by energy_window")
+        if self.autocorr_max_lag <= 0:
+            raise ValueError("autocorr_max_lag must be greater than 0.")
         self.num_windows = self.num_iq_samples // self.energy_window
 
         self.use_raw_branch = bool(use_raw_branch)
@@ -161,6 +180,35 @@ class CNRSenseNet(nn.Module):
     def compute_diff(x_iq: torch.Tensor) -> torch.Tensor:
         return x_iq[:, :, 1:] - x_iq[:, :, :-1]
 
+    def compute_autocorr(self, x_iq: torch.Tensor) -> torch.Tensor:
+        batch_size, _, num_iq_samples = x_iq.shape
+        max_lag = min(self.autocorr_max_lag, num_iq_samples - 1)
+        if max_lag <= 0:
+            return x_iq.new_zeros((batch_size, 2, 1))
+
+        i = x_iq[:, 0, :]
+        q = x_iq[:, 1, :]
+        zero_lag_power = torch.mean(i * i + q * q, dim=1, keepdim=True)
+
+        real_parts: list[torch.Tensor] = []
+        imag_parts: list[torch.Tensor] = []
+        for lag in range(1, max_lag + 1):
+            i_next = i[:, lag:]
+            q_next = q[:, lag:]
+            i_prev = i[:, :-lag]
+            q_prev = q[:, :-lag]
+            real_parts.append(torch.mean(i_next * i_prev + q_next * q_prev, dim=1))
+            imag_parts.append(torch.mean(q_next * i_prev - i_next * q_prev, dim=1))
+
+        real_corr = torch.stack(real_parts, dim=1) / (zero_lag_power + 1e-6)
+        imag_corr = torch.stack(imag_parts, dim=1) / (zero_lag_power + 1e-6)
+        return torch.stack([real_corr, imag_corr], dim=1)
+
+    def compute_aux_features(self, x_iq: torch.Tensor) -> torch.Tensor:
+        if self.aux_branch_type == "autocorr":
+            return self.compute_autocorr(x_iq)
+        return self.compute_diff(x_iq)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_iq = self.reshape_iq(x)
         feature_parts: list[torch.Tensor] = []
@@ -171,8 +219,8 @@ class CNRSenseNet(nn.Module):
             x_energy = self.compute_local_energy(x_iq)
             feature_parts.append(self.energy_branch(x_energy))
         if self.use_diff_branch:
-            x_diff = self.compute_diff(x_iq)
-            feature_parts.append(self.diff_branch(x_diff))
+            x_aux = self.compute_aux_features(x_iq)
+            feature_parts.append(self.diff_branch(x_aux))
 
         features = feature_parts[0] if len(feature_parts) == 1 else torch.cat(feature_parts, dim=1)
         return self.classifier(features).squeeze(-1)
@@ -195,6 +243,8 @@ class CNRSenseNetModel(BaseDetector):
         signal_length: int | None = None,
         energy_window: int = 8,
         dropout: float = 0.2,
+        aux_branch_type: str = "diff",
+        autocorr_max_lag: int = 8,
         use_raw_branch: bool = True,
         use_energy_branch: bool = True,
         use_diff_branch: bool = True,
@@ -220,6 +270,8 @@ class CNRSenseNetModel(BaseDetector):
             signal_length=signal_length,
             energy_window=energy_window,
             dropout=dropout,
+            aux_branch_type=aux_branch_type,
+            autocorr_max_lag=autocorr_max_lag,
             use_raw_branch=use_raw_branch,
             use_energy_branch=use_energy_branch,
             use_diff_branch=use_diff_branch,
@@ -242,11 +294,15 @@ class CNRSenseNetModel(BaseDetector):
         self.signal_length = signal_length
         self.energy_window = int(energy_window)
         self.dropout = float(dropout)
+        self.aux_branch_type = normalize_aux_branch_type(aux_branch_type)
+        self.autocorr_max_lag = int(autocorr_max_lag)
         self.use_raw_branch = bool(use_raw_branch)
         self.use_energy_branch = bool(use_energy_branch)
         self.use_diff_branch = bool(use_diff_branch)
         if not any([self.use_raw_branch, self.use_energy_branch, self.use_diff_branch]):
             raise ValueError("At least one branch must be enabled.")
+        if self.autocorr_max_lag <= 0:
+            raise ValueError("autocorr_max_lag must be greater than 0.")
         self.lr = float(lr)
         self.batch_size = int(batch_size)
         self.epochs = int(epochs)
@@ -264,6 +320,8 @@ class CNRSenseNetModel(BaseDetector):
         self._validate_snr_loss_config()
         self.prefers_internal_threshold = self.decision_threshold is not None and self.threshold_mode is not None
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.config["aux_branch_type"] = self.aux_branch_type
+        self.config["autocorr_max_lag"] = self.autocorr_max_lag
         self.model: CNRSenseNet | None = None
         self.history = TrainingHistory(train_loss=[], val_loss=[])
         self.fit_result: CalibratedThresholdResult | None = None
@@ -390,6 +448,8 @@ class CNRSenseNetModel(BaseDetector):
                 signal_length=inferred_length,
                 energy_window=self.energy_window,
                 dropout=self.dropout,
+                aux_branch_type=self.aux_branch_type,
+                autocorr_max_lag=self.autocorr_max_lag,
                 use_raw_branch=self.use_raw_branch,
                 use_energy_branch=self.use_energy_branch,
                 use_diff_branch=self.use_diff_branch,
@@ -638,4 +698,5 @@ __all__ = [
     "EnergyBranch",
     "RawBranch",
     "TrainingHistory",
+    "normalize_aux_branch_type",
 ]

@@ -57,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs-values", nargs="+", type=int, default=[5])
     parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--energy-window", type=int, default=8)
+    parser.add_argument("--aux-branch-type", choices=["diff", "autocorr"], default="autocorr")
+    parser.add_argument("--autocorr-max-lag", type=int, default=8)
     parser.add_argument(
         "--threshold-mode",
         choices=["fixed", "balanced_acc", "youden", "target_pfa"],
@@ -201,6 +203,8 @@ def maybe_save_best_checkpoint(
             "signal_length": int(bundle.input_dim),
             "energy_window": int(args.energy_window),
             "dropout": float(best_trial["trial"]["dropout"]),
+            "aux_branch_type": args.aux_branch_type,
+            "autocorr_max_lag": int(args.autocorr_max_lag),
             "lr": float(best_trial["trial"]["lr"]),
             "batch_size": int(best_trial["trial"]["batch_size"]),
             "epochs": int(best_trial["trial"]["epochs"]),
@@ -387,6 +391,8 @@ def write_search_state(
         },
         "fixed_config": {
             "energy_window": int(args.energy_window),
+            "aux_branch_type": args.aux_branch_type,
+            "autocorr_max_lag": int(args.autocorr_max_lag),
             "threshold_mode": args.threshold_mode,
             "target_pfa": float(args.target_pfa),
             "calibration_split": args.calibration_split,
@@ -501,6 +507,8 @@ def main() -> None:
             signal_length=bundle.input_dim,
             energy_window=args.energy_window,
             dropout=trial["dropout"],
+            aux_branch_type=args.aux_branch_type,
+            autocorr_max_lag=args.autocorr_max_lag,
             lr=trial["lr"],
             batch_size=trial["batch_size"],
             epochs=trial["epochs"],

@@ -54,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--weight-decay', type=float, default=0.0)
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--energy-window', type=int, default=8)
+    parser.add_argument('--aux-branch-type', choices=['diff', 'autocorr'], default='autocorr')
+    parser.add_argument('--autocorr-max-lag', type=int, default=8)
     parser.add_argument(
         '--threshold-mode',
         choices=['fixed', 'balanced_acc', 'youden', 'target_pfa'],
@@ -397,6 +399,8 @@ def maybe_save_checkpoint(model, output_path: Path, args, summary: dict) -> None
             'signal_length': summary['dataset']['input_dim'],
             'energy_window': args.energy_window,
             'dropout': args.dropout,
+            'aux_branch_type': args.aux_branch_type,
+            'autocorr_max_lag': args.autocorr_max_lag,
             'lr': args.lr,
             'batch_size': args.batch_size,
             'epochs': args.epochs,
@@ -457,6 +461,8 @@ def main() -> None:
         signal_length=bundle.input_dim,
         energy_window=args.energy_window,
         dropout=args.dropout,
+        aux_branch_type=args.aux_branch_type,
+        autocorr_max_lag=args.autocorr_max_lag,
         lr=args.lr,
         batch_size=args.batch_size,
         epochs=args.epochs,
@@ -550,6 +556,8 @@ def main() -> None:
             'weight_decay': float(args.weight_decay),
             'dropout': float(args.dropout),
             'energy_window': int(args.energy_window),
+            'aux_branch_type': args.aux_branch_type,
+            'autocorr_max_lag': int(args.autocorr_max_lag),
             'decision_threshold': float(args.decision_threshold),
             'threshold_mode': args.threshold_mode,
             'target_pfa': float(args.target_pfa),

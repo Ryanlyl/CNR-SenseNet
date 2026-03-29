@@ -54,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="Adam weight decay.")
     parser.add_argument("--patience", type=int, default=2, help="Validation patience for early stopping.")
     parser.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for probability outputs.")
+    parser.add_argument("--aux-branch-type", choices=["diff", "autocorr"], default="autocorr")
+    parser.add_argument("--autocorr-max-lag", type=int, default=8)
     parser.add_argument("--device", default=None, help="Training device. Defaults to cuda if available else cpu.")
     parser.add_argument("--num-threads", type=int, default=None, help="Torch CPU thread count.")
     parser.add_argument(
@@ -262,15 +264,18 @@ def run_experiment(args) -> Path:
     rows = []
     for model_name in args.models:
         print(f"\n=== Training {model_name} ===")
-        model = create_model(
-            model_name,
-            lr=args.lr,
-            batch_size=args.batch_size,
-            epochs=args.epochs,
-            weight_decay=args.weight_decay,
-            threshold=args.threshold,
-            device=args.device,
-        )
+        model_kwargs = {
+            'lr': args.lr,
+            'batch_size': args.batch_size,
+            'epochs': args.epochs,
+            'weight_decay': args.weight_decay,
+            'threshold': args.threshold,
+            'device': args.device,
+        }
+        if model_name == 'cnr_sensenet':
+            model_kwargs['aux_branch_type'] = args.aux_branch_type
+            model_kwargs['autocorr_max_lag'] = args.autocorr_max_lag
+        model = create_model(model_name, **model_kwargs)
         model.fit(
             train_dataset,
             val_dataset=val_dataset,

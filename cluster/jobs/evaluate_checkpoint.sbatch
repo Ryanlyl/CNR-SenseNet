@@ -2,7 +2,7 @@
 #SBATCH --job-name=cnr-eval
 #SBATCH --output=slurm-%x-%j.out
 
-set -eo pipefail
+set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$HOME/CNR-SenseNet}"
 ENV_NAME="${ENV_NAME:-cnr-sensenet}"
@@ -25,12 +25,24 @@ cd "$REPO_ROOT"
 mkdir -p "$(dirname "$CACHE_PATH")" "$(dirname "$OUTPUT_JSON")"
 
 module load Miniforge3
-source activate "$ENV_NAME"
+eval "$(conda shell.bash hook)"
+conda activate "$ENV_NAME"
+
+if [[ ! -f "$CACHE_PATH" ]]; then
+  if [[ ! -f "$PKL_PATH" ]]; then
+    echo "Cache not found at $CACHE_PATH and raw pickle not found at $PKL_PATH" >&2
+    exit 1
+  fi
+  python -m project.prepare_dataset \
+    --pkl-path "$PKL_PATH" \
+    --cache-path "$CACHE_PATH"
+fi
 
 python -m project.evaluate \
   --checkpoint "$CHECKPOINT_PATH" \
   --dataset-npz "$CACHE_PATH" \
   --pkl-path "$PKL_PATH" \
   --cache-path "$CACHE_PATH" \
+  --device cuda \
   --output-json "$OUTPUT_JSON" \
   "$@"

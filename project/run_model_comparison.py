@@ -81,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--weight-decay', type=float, default=0.0)
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--energy-window', type=int, default=8)
+    parser.add_argument('--aux-branch-type', choices=['diff', 'autocorr'], default='autocorr')
     parser.add_argument(
         '--threshold-mode',
         choices=['fixed', 'balanced_acc', 'youden', 'target_pfa'],
@@ -189,6 +190,8 @@ def build_model(model_name: str, args, signal_length: int):
         common_kwargs['score_mode'] = args.autocorr_score_mode
     if model_name == 'cnr_sensenet':
         common_kwargs['energy_window'] = args.energy_window
+        common_kwargs['aux_branch_type'] = args.aux_branch_type
+        common_kwargs['autocorr_max_lag'] = args.autocorr_max_lag
         common_kwargs['snr_loss_weighting'] = args.snr_loss_weighting
         common_kwargs['low_snr_cutoff'] = args.low_snr_cutoff
         common_kwargs['low_snr_positive_weight'] = args.low_snr_positive_weight
@@ -633,6 +636,7 @@ def main() -> None:
             'mid_snr_positive_weight': float(args.mid_snr_positive_weight),
             'score_batch_size': int(args.score_batch_size),
             'energy_statistic': args.energy_statistic,
+            'aux_branch_type': args.aux_branch_type,
             'autocorr_max_lag': int(args.autocorr_max_lag),
             'autocorr_score_mode': args.autocorr_score_mode,
             'test_ratio': float(args.test_ratio),

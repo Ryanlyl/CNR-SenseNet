@@ -2,7 +2,7 @@
 #SBATCH --job-name=cnr-prepare
 #SBATCH --output=slurm-%x-%j.out
 
-set -eo pipefail
+set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$HOME/CNR-SenseNet}"
 ENV_NAME="${ENV_NAME:-cnr-sensenet}"
@@ -14,7 +14,8 @@ cd "$REPO_ROOT"
 mkdir -p "$(dirname "$CACHE_PATH")" "$(dirname "$SUMMARY_JSON")"
 
 module load Miniforge3
-source activate "$ENV_NAME"
+eval "$(conda shell.bash hook)"
+conda activate "$ENV_NAME"
 
 python -m project.prepare_dataset \
   --pkl-path "$PKL_PATH" \
