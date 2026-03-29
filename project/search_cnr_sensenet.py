@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import time
 from itertools import product
 from pathlib import Path
@@ -92,6 +94,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for search summaries and the best checkpoint.",
     )
     parser.add_argument("--output-prefix", default="cnr_sensenet_search")
+    parser.add_argument(
+        "--resume",
+        dest="resume",
+        action="store_true",
+        default=True,
+        help="Resume from an existing results CSV in the output directory.",
+    )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Ignore previously written partial search state.",
+    )
     parser.add_argument("--save-best-checkpoint", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     return parser
@@ -127,6 +142,16 @@ def build_trials(args) -> list[dict[str, float | int]]:
     if args.max_trials is not None:
         return trials[: max(int(args.max_trials), 0)]
     return trials
+
+
+def build_trial_key(trial: dict[str, float | int]) -> str:
+    return (
+        f"lr={float(trial['lr']):.12g}|"
+        f"weight_decay={float(trial['weight_decay']):.12g}|"
+        f"dropout={float(trial['dropout']):.12g}|"
+        f"batch_size={int(trial['batch_size'])}|"
+        f"epochs={int(trial['epochs'])}"
+    )
 
 
 def extract_training_history(model) -> dict[str, object]:
@@ -200,6 +225,195 @@ def maybe_save_best_checkpoint(
     torch.save(payload, output_path)
 
 
+def load_json_if_exists(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def detailed_result_from_row(row: dict[str, object]) -> dict[str, object]:
+    metric_names = (
+        "threshold",
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "pd",
+        "pfa",
+        "roc_auc",
+        "average_precision",
+    )
+    overall_metrics = {name: row.get(name) for name in metric_names}
+    return {
+        "trial_id": row.get("trial_id"),
+        "trial": {
+            "lr": row.get("lr"),
+            "weight_decay": row.get("weight_decay"),
+            "dropout": row.get("dropout"),
+            "batch_size": row.get("batch_size"),
+            "epochs": row.get("epochs"),
+        },
+        "overall_metrics": overall_metrics,
+        "metrics_by_snr": [],
+        "training_history": {
+            "train_loss": [],
+            "val_loss": [],
+            "epochs_ran": row.get("epochs_ran"),
+            "best_epoch": row.get("best_epoch"),
+            "best_val_loss": row.get("best_val_loss"),
+            "stopped_early": row.get("stopped_early"),
+        },
+        "timing_seconds": {
+            "train": row.get("train_seconds"),
+            "evaluate": row.get("eval_seconds"),
+        },
+    }
+
+
+def load_existing_rows(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+
+    rows: list[dict[str, object]] = []
+    int_fields = {"trial_id", "batch_size", "epochs", "epochs_ran", "best_epoch"}
+    float_fields = {
+        "lr",
+        "weight_decay",
+        "dropout",
+        "best_val_loss",
+        "threshold",
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "pd",
+        "pfa",
+        "roc_auc",
+        "average_precision",
+        "train_seconds",
+        "eval_seconds",
+    }
+    bool_fields = {"stopped_early"}
+
+    with path.open("r", newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for raw_row in reader:
+            row: dict[str, object] = dict(raw_row)
+            for field in int_fields:
+                value = row.get(field)
+                row[field] = None if value in {None, ""} else int(value)
+            for field in float_fields:
+                value = row.get(field)
+                row[field] = None if value in {None, ""} else float(value)
+            for field in bool_fields:
+                value = str(row.get(field, "")).strip().lower()
+                row[field] = value == "true"
+            if not row.get("trial_key"):
+                row["trial_key"] = build_trial_key(
+                    {
+                        "lr": row["lr"],
+                        "weight_decay": row["weight_decay"],
+                        "dropout": row["dropout"],
+                        "batch_size": row["batch_size"],
+                        "epochs": row["epochs"],
+                    }
+                )
+            rows.append(row)
+    return rows
+
+
+def load_existing_best_trial(
+    artifact_paths: dict[str, Path],
+    trial_rows: list[dict[str, object]],
+    selection_metric: str,
+) -> dict | None:
+    best_trial = load_json_if_exists(artifact_paths["best_trial_json"])
+    if best_trial is not None:
+        return best_trial
+    summary = load_json_if_exists(artifact_paths["summary_json"])
+    if summary is not None and summary.get("best_trial") is not None:
+        return summary["best_trial"]
+    if trial_rows:
+        best_row = max(trial_rows, key=lambda row: metric_value(row, selection_metric))
+        return detailed_result_from_row(best_row)
+    return None
+
+
+def write_search_state(
+    artifact_paths: dict[str, Path],
+    args,
+    bundle,
+    train_dataset,
+    val_dataset,
+    trials: list[dict[str, float | int]],
+    trial_rows: list[dict[str, object]],
+    best_trial: dict | None,
+    is_complete: bool,
+    resumed_count: int,
+) -> None:
+    sorted_rows = sorted(
+        trial_rows,
+        key=lambda row: metric_value(row, args.selection_metric),
+        reverse=True,
+    )
+    top_rows = sorted_rows[: max(int(args.top_k), 0)]
+    summary = {
+        "selection_metric": args.selection_metric,
+        "num_trials": len(trials),
+        "num_completed_trials": len(trial_rows),
+        "num_remaining_trials": max(len(trials) - len(trial_rows), 0),
+        "resumed_trials": int(resumed_count),
+        "is_complete": bool(is_complete),
+        "dataset": {
+            "pkl_path": str(bundle.pkl_path),
+            "cache_path": str(bundle.cache_path),
+            "train_size": int(len(train_dataset)),
+            "val_size": int(len(val_dataset)) if val_dataset is not None else 0,
+            "test_size": int(len(bundle.test_dataset)),
+            "input_dim": int(bundle.input_dim),
+            "noise_power": float(bundle.noise_power),
+            "snrs": [int(value) for value in bundle.snrs],
+            "mods": list(bundle.mods),
+        },
+        "search_space": {
+            "lr_values": ordered_unique(float(value) for value in args.lr_values),
+            "weight_decay_values": ordered_unique(float(value) for value in args.weight_decay_values),
+            "dropout_values": ordered_unique(float(value) for value in args.dropout_values),
+            "batch_size_values": ordered_unique(int(value) for value in args.batch_size_values),
+            "epochs_values": ordered_unique(int(value) for value in args.epochs_values),
+            "patience": int(args.patience),
+        },
+        "fixed_config": {
+            "energy_window": int(args.energy_window),
+            "threshold_mode": args.threshold_mode,
+            "target_pfa": float(args.target_pfa),
+            "calibration_split": args.calibration_split,
+            "snr_loss_weighting": args.snr_loss_weighting,
+            "low_snr_cutoff": int(args.low_snr_cutoff),
+            "low_snr_positive_weight": float(args.low_snr_positive_weight),
+            "mid_snr_cutoff": int(args.mid_snr_cutoff),
+            "mid_snr_positive_weight": float(args.mid_snr_positive_weight),
+            "decision_threshold": float(args.decision_threshold),
+            "device": args.device or ("cuda" if torch.cuda.is_available() else "cpu"),
+            "resume": bool(args.resume),
+        },
+        "best_trial": best_trial,
+        "top_trials": top_rows,
+        "artifacts": {
+            name: str(path)
+            for name, path in artifact_paths.items()
+            if name != "best_checkpoint_pt" or args.save_best_checkpoint
+        },
+    }
+
+    write_csv(artifact_paths["results_csv"], sorted_rows)
+    write_json(artifact_paths["summary_json"], summary)
+    if best_trial is not None:
+        write_json(artifact_paths["best_trial_json"], best_trial)
+
+
 def main() -> None:
     args = build_parser().parse_args()
     seed_everything(args.seed)
@@ -246,9 +460,36 @@ def main() -> None:
 
     trial_rows: list[dict[str, object]] = []
     best_trial: dict[str, object] | None = None
-    best_model = None
+    completed_trial_keys: set[str] = set()
+
+    if args.resume:
+        trial_rows = load_existing_rows(artifact_paths["results_csv"])
+        completed_trial_keys = {
+            str(row["trial_key"])
+            for row in trial_rows
+            if row.get("trial_key")
+        }
+        best_trial = load_existing_best_trial(artifact_paths, trial_rows, args.selection_metric)
+        if completed_trial_keys:
+            print(
+                f"Resuming from {len(completed_trial_keys)} completed trials "
+                f"under {artifact_paths['results_csv']}"
+            )
+
+    resume_start_count = len(completed_trial_keys)
+
+    best_metric_so_far = float("-inf")
+    if best_trial is not None:
+        best_metric_so_far = metric_value(best_trial["overall_metrics"], args.selection_metric)
+    elif trial_rows:
+        best_metric_so_far = max(metric_value(row, args.selection_metric) for row in trial_rows)
 
     for trial_id, trial in enumerate(trials, start=1):
+        trial_key = build_trial_key(trial)
+        if trial_key in completed_trial_keys:
+            print(f"[Trial {trial_id}/{len(trials)}] skip existing {trial_key}")
+            continue
+
         print(
             f"[Trial {trial_id}/{len(trials)}] "
             f"lr={trial['lr']} wd={trial['weight_decay']} dropout={trial['dropout']} "
@@ -313,6 +554,7 @@ def main() -> None:
 
         row = {
             "trial_id": trial_id,
+            "trial_key": trial_key,
             "lr": float(trial["lr"]),
             "weight_decay": float(trial["weight_decay"]),
             "dropout": float(trial["dropout"]),
@@ -336,6 +578,7 @@ def main() -> None:
             "eval_seconds": float(eval_seconds),
         }
         trial_rows.append(row)
+        completed_trial_keys.add(trial_key)
 
         detailed_result = {
             "trial_id": trial_id,
@@ -356,71 +599,40 @@ def main() -> None:
             },
         }
 
-        if best_trial is None or metric_value(row, args.selection_metric) > metric_value(
-            best_trial["overall_metrics"],
-            args.selection_metric,
-        ):
+        current_metric = metric_value(row, args.selection_metric)
+        if current_metric > best_metric_so_far:
+            best_metric_so_far = current_metric
             best_trial = detailed_result
-            best_model = model
-            maybe_save_best_checkpoint(best_model, artifact_paths["best_checkpoint_pt"], bundle, args, best_trial)
+            maybe_save_best_checkpoint(model, artifact_paths["best_checkpoint_pt"], bundle, args, best_trial)
+            print(f"  New best {args.selection_metric}={best_metric_so_far:.4f}")
 
-    sorted_rows = sorted(
-        trial_rows,
-        key=lambda row: metric_value(row, args.selection_metric),
-        reverse=True,
+        write_search_state(
+            artifact_paths=artifact_paths,
+            args=args,
+            bundle=bundle,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            trials=trials,
+            trial_rows=trial_rows,
+            best_trial=best_trial,
+            is_complete=False,
+            resumed_count=resume_start_count,
+        )
+
+    write_search_state(
+        artifact_paths=artifact_paths,
+        args=args,
+        bundle=bundle,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        trials=trials,
+        trial_rows=trial_rows,
+        best_trial=best_trial,
+        is_complete=True,
+        resumed_count=resume_start_count,
     )
-    top_rows = sorted_rows[: max(int(args.top_k), 0)]
 
-    summary = {
-        "selection_metric": args.selection_metric,
-        "num_trials": len(trials),
-        "dataset": {
-            "pkl_path": str(bundle.pkl_path),
-            "cache_path": str(bundle.cache_path),
-            "train_size": int(len(train_dataset)),
-            "val_size": int(len(val_dataset)) if val_dataset is not None else 0,
-            "test_size": int(len(bundle.test_dataset)),
-            "input_dim": int(bundle.input_dim),
-            "noise_power": float(bundle.noise_power),
-            "snrs": [int(value) for value in bundle.snrs],
-            "mods": list(bundle.mods),
-        },
-        "search_space": {
-            "lr_values": ordered_unique(float(value) for value in args.lr_values),
-            "weight_decay_values": ordered_unique(float(value) for value in args.weight_decay_values),
-            "dropout_values": ordered_unique(float(value) for value in args.dropout_values),
-            "batch_size_values": ordered_unique(int(value) for value in args.batch_size_values),
-            "epochs_values": ordered_unique(int(value) for value in args.epochs_values),
-            "patience": int(args.patience),
-        },
-        "fixed_config": {
-            "energy_window": int(args.energy_window),
-            "threshold_mode": args.threshold_mode,
-            "target_pfa": float(args.target_pfa),
-            "calibration_split": args.calibration_split,
-            "snr_loss_weighting": args.snr_loss_weighting,
-            "low_snr_cutoff": int(args.low_snr_cutoff),
-            "low_snr_positive_weight": float(args.low_snr_positive_weight),
-            "mid_snr_cutoff": int(args.mid_snr_cutoff),
-            "mid_snr_positive_weight": float(args.mid_snr_positive_weight),
-            "decision_threshold": float(args.decision_threshold),
-            "device": args.device or ("cuda" if torch.cuda.is_available() else "cpu"),
-        },
-        "best_trial": best_trial,
-        "top_trials": top_rows,
-        "artifacts": {
-            name: str(path)
-            for name, path in artifact_paths.items()
-            if name != "best_checkpoint_pt" or args.save_best_checkpoint
-        },
-    }
-
-    write_csv(artifact_paths["results_csv"], sorted_rows)
-    write_json(artifact_paths["summary_json"], summary)
-    if best_trial is not None:
-        write_json(artifact_paths["best_trial_json"], best_trial)
-
-    print(f"Search completed: {len(trials)} trials")
+    print(f"Search completed: {len(trial_rows)}/{len(trials)} trials")
     if best_trial is not None:
         print(
             f"Best {args.selection_metric}={best_trial['overall_metrics'][args.selection_metric]:.4f} "
@@ -429,10 +641,10 @@ def main() -> None:
             f"epochs={best_trial['trial']['epochs']}"
         )
     print("Saved artifacts:")
-    for name, path in artifact_paths.items():
+    for name, output_path in artifact_paths.items():
         if name == "best_checkpoint_pt" and not args.save_best_checkpoint:
             continue
-        print(f"  {name}: {path}")
+        print(f"  {name}: {output_path}")
 
 
 if __name__ == "__main__":

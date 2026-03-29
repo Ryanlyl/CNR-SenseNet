@@ -138,8 +138,48 @@ python -m project.search_cnr_sensenet \
 ```
 
 Outputs are written under `project/results/cnr_sensenet_search_gpu/`.
+If the job hits the wall time, resubmitting the same command with the same output directory will resume from the finished trials already listed in `gpu_search_results.csv`.
 
-## 8. Run Multi-Model Comparison
+## 8. Run The Round-2 Narrow Search
+
+This job narrows the search around the current best region found on the first pass:
+
+- `lr`: `8e-4 1e-3 1.2e-3`
+- `weight_decay`: `0.0 1e-6 1e-5`
+- `dropout`: `0.15 0.2 0.25`
+- `batch_size`: `256 512 768`
+- `epochs`: `30 40`
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=10:00:00 cluster/jobs/search_cnr_sensenet_narrow.sbatch
+```
+
+Outputs are written under `project/results/cnr_sensenet_search_round2/`.
+Like the first-pass search, resubmitting the same command with the same output directory will resume from the finished trials already listed in `gpu_search_round2_results.csv`.
+
+## 9. Re-Run The Current Best Config Across Multiple Seeds
+
+This job repeats the current best setting on several seeds to check stability:
+
+- default seeds: `42 43 44`
+- default config: `lr=1e-3`, `weight_decay=0.0`, `dropout=0.2`, `batch_size=512`, `epochs=30`, `patience=3`
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=06:00:00 cluster/jobs/train_cnr_sensenet_multiseed.sbatch
+```
+
+Outputs are written under `project/results/cnr_sensenet_multiseed/seed_<seed>/`.
+
+You can override the seeds or defaults with environment variables, for example:
+
+```bash
+SEEDS="52 62 72" OUTPUT_DIR=~/CNR-SenseNet/project/results/cnr_sensenet_multiseed_alt \
+sbatch --gpus=a5000:1 --time=06:00:00 cluster/jobs/train_cnr_sensenet_multiseed.sbatch
+```
+
+## 10. Run Multi-Model Comparison
 
 ```bash
 cd ~/CNR-SenseNet
@@ -148,7 +188,7 @@ sbatch --gpus=a5000:1 --time=12:00:00 cluster/jobs/model_comparison.sbatch --epo
 
 Outputs are written under `project/plots/model_comparison/`.
 
-## 9. Evaluate A Saved Checkpoint
+## 11. Evaluate A Saved Checkpoint
 
 `project/evaluate.py` now supports checkpoint evaluation for saved `.pt` files.
 
@@ -177,13 +217,15 @@ sbatch --gpus=v100:1 --time=01:00:00 cluster/jobs/evaluate_checkpoint.sbatch \
   --threshold 0.55 --test-ratio 0.2 --val-ratio 0.1 --seed 42
 ```
 
-## 10. Watch Jobs And Inspect Logs
+## 12. Watch Jobs And Inspect Logs
 
 ```bash
 squeue -u $USER
 tail -f slurm-cnr-baselines-<jobid>.out
 tail -f slurm-cnr-train-<jobid>.out
 tail -f slurm-cnr-search-<jobid>.out
+tail -f slurm-cnr-search-r2-<jobid>.out
+tail -f slurm-cnr-multiseed-<jobid>.out
 ```
 
 The cluster docs also recommend using Slurm commands such as:
@@ -192,7 +234,7 @@ The cluster docs also recommend using Slurm commands such as:
 sacct -j <jobid>
 ```
 
-## 11. Copy Results Back To Local
+## 13. Copy Results Back To Local
 
 Local PowerShell:
 
@@ -209,6 +251,16 @@ scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/plots/cnr_sens
 ```powershell
 scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/cnr_sensenet_search_gpu `
   D:\Dissertation\Code\CNR-SenseNet\project\results\cnr_sensenet_search_gpu_cluster
+```
+
+```powershell
+scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/cnr_sensenet_search_round2 `
+  D:\Dissertation\Code\CNR-SenseNet\project\results\cnr_sensenet_search_round2_cluster
+```
+
+```powershell
+scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/cnr_sensenet_multiseed `
+  D:\Dissertation\Code\CNR-SenseNet\project\results\cnr_sensenet_multiseed_cluster
 ```
 
 ## Notes
