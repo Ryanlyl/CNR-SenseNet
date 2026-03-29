@@ -94,7 +94,15 @@ class EnergyBranch(nn.Module):
 class CNRSenseNet(nn.Module):
     """Backbone network extracted from the notebook implementation."""
 
-    def __init__(self, signal_length: int = 256, energy_window: int = 8, dropout: float = 0.2):
+    def __init__(
+        self,
+        signal_length: int = 256,
+        energy_window: int = 8,
+        dropout: float = 0.2,
+        use_raw_branch: bool = True,
+        use_energy_branch: bool = True,
+        use_diff_branch: bool = True,
+    ):
         super().__init__()
         if signal_length % 2 != 0:
             raise ValueError("signal_length must be even for interleaved IQ samples")
@@ -106,11 +114,26 @@ class CNRSenseNet(nn.Module):
             raise ValueError("number of IQ samples must be divisible by energy_window")
         self.num_windows = self.num_iq_samples // self.energy_window
 
-        self.raw_branch = RawBranch()
-        self.diff_branch = DiffBranch()
-        self.energy_branch = EnergyBranch(self.num_windows)
+        self.use_raw_branch = bool(use_raw_branch)
+        self.use_energy_branch = bool(use_energy_branch)
+        self.use_diff_branch = bool(use_diff_branch)
+        if not any([self.use_raw_branch, self.use_energy_branch, self.use_diff_branch]):
+            raise ValueError("At least one branch must be enabled.")
+
+        self.raw_branch = RawBranch() if self.use_raw_branch else None
+        self.diff_branch = DiffBranch() if self.use_diff_branch else None
+        self.energy_branch = EnergyBranch(self.num_windows) if self.use_energy_branch else None
+
+        feature_dim = 0
+        if self.use_raw_branch:
+            feature_dim += 64
+        if self.use_energy_branch:
+            feature_dim += 32
+        if self.use_diff_branch:
+            feature_dim += 32
+
         self.classifier = nn.Sequential(
-            nn.Linear(64 + 32 + 32, 64),
+            nn.Linear(feature_dim, 64),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
             nn.Linear(64, 1),
@@ -140,15 +163,18 @@ class CNRSenseNet(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_iq = self.reshape_iq(x)
-        h_raw = self.raw_branch(x_iq)
+        feature_parts: list[torch.Tensor] = []
 
-        x_energy = self.compute_local_energy(x_iq)
-        h_energy = self.energy_branch(x_energy)
+        if self.use_raw_branch:
+            feature_parts.append(self.raw_branch(x_iq))
+        if self.use_energy_branch:
+            x_energy = self.compute_local_energy(x_iq)
+            feature_parts.append(self.energy_branch(x_energy))
+        if self.use_diff_branch:
+            x_diff = self.compute_diff(x_iq)
+            feature_parts.append(self.diff_branch(x_diff))
 
-        x_diff = self.compute_diff(x_iq)
-        h_diff = self.diff_branch(x_diff)
-
-        features = torch.cat([h_raw, h_energy, h_diff], dim=1)
+        features = feature_parts[0] if len(feature_parts) == 1 else torch.cat(feature_parts, dim=1)
         return self.classifier(features).squeeze(-1)
 
 
@@ -169,6 +195,9 @@ class CNRSenseNetModel(BaseDetector):
         signal_length: int | None = None,
         energy_window: int = 8,
         dropout: float = 0.2,
+        use_raw_branch: bool = True,
+        use_energy_branch: bool = True,
+        use_diff_branch: bool = True,
         lr: float = 1e-3,
         batch_size: int = 256,
         epochs: int = 10,
@@ -191,6 +220,9 @@ class CNRSenseNetModel(BaseDetector):
             signal_length=signal_length,
             energy_window=energy_window,
             dropout=dropout,
+            use_raw_branch=use_raw_branch,
+            use_energy_branch=use_energy_branch,
+            use_diff_branch=use_diff_branch,
             lr=lr,
             batch_size=batch_size,
             epochs=epochs,
@@ -210,6 +242,11 @@ class CNRSenseNetModel(BaseDetector):
         self.signal_length = signal_length
         self.energy_window = int(energy_window)
         self.dropout = float(dropout)
+        self.use_raw_branch = bool(use_raw_branch)
+        self.use_energy_branch = bool(use_energy_branch)
+        self.use_diff_branch = bool(use_diff_branch)
+        if not any([self.use_raw_branch, self.use_energy_branch, self.use_diff_branch]):
+            raise ValueError("At least one branch must be enabled.")
         self.lr = float(lr)
         self.batch_size = int(batch_size)
         self.epochs = int(epochs)
@@ -353,6 +390,9 @@ class CNRSenseNetModel(BaseDetector):
                 signal_length=inferred_length,
                 energy_window=self.energy_window,
                 dropout=self.dropout,
+                use_raw_branch=self.use_raw_branch,
+                use_energy_branch=self.use_energy_branch,
+                use_diff_branch=self.use_diff_branch,
             ).to(self.device)
             self.signal_length = inferred_length
         return self.model
