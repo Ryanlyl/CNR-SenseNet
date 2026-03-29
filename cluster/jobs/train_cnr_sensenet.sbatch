@@ -20,5 +20,6 @@ python -m project.run_cnr_sensenet_eval \
   --pkl-path "$PKL_PATH" \
   --cache-path "$CACHE_PATH" \
   --output-dir "$OUTPUT_DIR" \
+  --device cuda \
   --save-checkpoint \
   "$@"

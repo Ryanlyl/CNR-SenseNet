@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 
 import numpy as np
@@ -155,6 +156,9 @@ class CNRSenseNet(nn.Module):
 class TrainingHistory:
     train_loss: list[float]
     val_loss: list[float]
+    best_epoch: int | None = None
+    best_val_loss: float | None = None
+    stopped_early: bool = False
 
 
 class CNRSenseNetModel(BaseDetector):
@@ -402,6 +406,7 @@ class CNRSenseNetModel(BaseDetector):
         lr = float(kwargs.get("lr", self.lr))
         batch_size = int(kwargs.get("batch_size", self.batch_size))
         weight_decay = float(kwargs.get("weight_decay", self.weight_decay))
+        patience = kwargs.get("patience")
         threshold_mode = self._normalize_threshold_mode(kwargs.get("threshold_mode", self.threshold_mode))
         target_pfa = float(kwargs.get("target_pfa", self.target_pfa))
         calibration_split = str(kwargs.get("calibration_split", self.calibration_split))
@@ -434,6 +439,7 @@ class CNRSenseNetModel(BaseDetector):
         self.config["lr"] = lr
         self.config["batch_size"] = batch_size
         self.config["weight_decay"] = weight_decay
+        self.config["patience"] = None if patience is None else int(patience)
         self.config["threshold_mode"] = threshold_mode
         self.config["target_pfa"] = target_pfa
         self.config["calibration_split"] = calibration_split
@@ -452,6 +458,11 @@ class CNRSenseNetModel(BaseDetector):
         val_loader = self._make_loader(val_dataset, shuffle=False) if val_dataset is not None else None
 
         self.history = TrainingHistory(train_loss=[], val_loss=[])
+        best_state = deepcopy(self.model.state_dict())
+        best_val_loss = float("inf")
+        best_epoch: int | None = None
+        epochs_without_improvement = 0
+        stopped_early = False
         for epoch in range(epochs):
             train_loss = self._run_epoch(train_loader, criterion, optimizer=optimizer)
             self.history.train_loss.append(float(train_loss))
@@ -459,6 +470,14 @@ class CNRSenseNetModel(BaseDetector):
             if val_loader is not None:
                 val_loss = self._run_epoch(val_loader, criterion, optimizer=None)
                 self.history.val_loss.append(float(val_loss))
+
+                if val_loss < best_val_loss:
+                    best_val_loss = float(val_loss)
+                    best_state = deepcopy(self.model.state_dict())
+                    best_epoch = epoch + 1
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
             elif self.history.val_loss:
                 self.history.val_loss.append(self.history.val_loss[-1])
 
@@ -470,6 +489,23 @@ class CNRSenseNetModel(BaseDetector):
                         f"[Epoch {epoch + 1}/{epochs}] train_loss={train_loss:.6f} "
                         f"val_loss={self.history.val_loss[-1]:.6f}"
                     )
+
+            if val_loader is not None and patience is not None and epochs_without_improvement >= int(patience):
+                stopped_early = True
+                if verbose:
+                    print(f"Early stopping at epoch {epoch + 1}.")
+                break
+
+        if val_loader is not None:
+            self.model.load_state_dict(best_state)
+            self.history.best_epoch = best_epoch
+            self.history.best_val_loss = None if best_epoch is None else float(best_val_loss)
+        elif self.history.train_loss:
+            self.history.best_epoch = len(self.history.train_loss)
+        self.history.stopped_early = stopped_early
+        self.config["epochs_ran"] = len(self.history.train_loss)
+        self.config["best_epoch"] = self.history.best_epoch
+        self.config["best_val_loss"] = self.history.best_val_loss
 
         self.fit_result = None
         self.decision_threshold = None

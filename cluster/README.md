@@ -112,7 +112,34 @@ sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/train_cnr_sensenet.sbatch --e
 
 Outputs are written under `project/plots/cnr_sensenet_eval/`.
 
-## 7. Run Multi-Model Comparison
+## 7. Search CNR-SenseNet Hyperparameters
+
+This job runs the dedicated grid search for `lr`, `weight_decay`, `dropout`, `batch_size`, and `epochs`, and saves the best checkpoint.
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/search_cnr_sensenet.sbatch
+```
+
+The default search grid matches:
+
+```bash
+python -m project.search_cnr_sensenet \
+  --device cuda \
+  --lr-values 1e-3 5e-4 3e-4 \
+  --weight-decay-values 0.0 1e-5 1e-4 \
+  --dropout-values 0.1 0.2 0.3 \
+  --batch-size-values 512 1024 2048 \
+  --epochs-values 10 20 30 \
+  --patience 3 \
+  --save-best-checkpoint \
+  --output-dir project/results/cnr_sensenet_search_gpu \
+  --output-prefix gpu_search
+```
+
+Outputs are written under `project/results/cnr_sensenet_search_gpu/`.
+
+## 8. Run Multi-Model Comparison
 
 ```bash
 cd ~/CNR-SenseNet
@@ -121,7 +148,7 @@ sbatch --gpus=a5000:1 --time=12:00:00 cluster/jobs/model_comparison.sbatch --epo
 
 Outputs are written under `project/plots/model_comparison/`.
 
-## 8. Evaluate A Saved Checkpoint
+## 9. Evaluate A Saved Checkpoint
 
 `project/evaluate.py` now supports checkpoint evaluation for saved `.pt` files.
 
@@ -150,12 +177,13 @@ sbatch --gpus=v100:1 --time=01:00:00 cluster/jobs/evaluate_checkpoint.sbatch \
   --threshold 0.55 --test-ratio 0.2 --val-ratio 0.1 --seed 42
 ```
 
-## 9. Watch Jobs And Inspect Logs
+## 10. Watch Jobs And Inspect Logs
 
 ```bash
 squeue -u $USER
 tail -f slurm-cnr-baselines-<jobid>.out
 tail -f slurm-cnr-train-<jobid>.out
+tail -f slurm-cnr-search-<jobid>.out
 ```
 
 The cluster docs also recommend using Slurm commands such as:
@@ -164,7 +192,7 @@ The cluster docs also recommend using Slurm commands such as:
 sacct -j <jobid>
 ```
 
-## 10. Copy Results Back To Local
+## 11. Copy Results Back To Local
 
 Local PowerShell:
 
@@ -176,6 +204,11 @@ scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/baseli
 ```powershell
 scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/plots/cnr_sensenet_eval `
   D:\Dissertation\Code\CNR-SenseNet\project\plots\cnr_sensenet_eval_cluster
+```
+
+```powershell
+scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/cnr_sensenet_search_gpu `
+  D:\Dissertation\Code\CNR-SenseNet\project\results\cnr_sensenet_search_gpu_cluster
 ```
 
 ## Notes

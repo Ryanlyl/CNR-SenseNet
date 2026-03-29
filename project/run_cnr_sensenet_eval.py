@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--cache-path', type=Path, default=None)
     parser.add_argument('--force-rebuild', action='store_true')
     parser.add_argument('--epochs', type=int, default=5)
+    parser.add_argument('--patience', type=int, default=3)
     parser.add_argument('--batch-size', type=int, default=1024)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--weight-decay', type=float, default=0.0)
@@ -337,6 +338,7 @@ def maybe_save_checkpoint(model, output_path: Path, args, summary: dict) -> None
             'lr': args.lr,
             'batch_size': args.batch_size,
             'epochs': args.epochs,
+            'patience': args.patience,
             'weight_decay': args.weight_decay,
             'threshold': args.decision_threshold,
             'threshold_mode': args.threshold_mode,
@@ -413,6 +415,7 @@ def main() -> None:
     model.fit(
         train_dataset,
         val_dataset=val_dataset,
+        patience=args.patience,
         threshold_mode=args.threshold_mode,
         target_pfa=args.target_pfa,
         calibration_split=args.calibration_split,
@@ -443,6 +446,10 @@ def main() -> None:
     training_history = {
         'train_loss': list(getattr(history, 'train_loss', [])),
         'val_loss': list(getattr(history, 'val_loss', [])),
+        'epochs_ran': len(list(getattr(history, 'train_loss', []))),
+        'best_epoch': getattr(history, 'best_epoch', None),
+        'best_val_loss': getattr(history, 'best_val_loss', None),
+        'stopped_early': bool(getattr(history, 'stopped_early', False)),
     }
 
     artifact_paths = {
@@ -473,6 +480,7 @@ def main() -> None:
         },
         'train_config': {
             'epochs': int(args.epochs),
+            'patience': int(args.patience),
             'batch_size': int(args.batch_size),
             'lr': float(args.lr),
             'weight_decay': float(args.weight_decay),
