@@ -325,6 +325,68 @@ def plot_snr_metrics(rows: list[dict[str, float | int | None]], output_path: Pat
     plt.close(fig)
 
 
+def plot_snr_detection_curves(rows: list[dict[str, float | int | None]], output_path: Path) -> None:
+    snrs = [int(row['snr']) for row in rows]
+    pd_values = [float(row['pd']) for row in rows]
+    pfa_values = [float(row['pfa']) for row in rows]
+    auc_values = [float(row['roc_auc']) if row['roc_auc'] is not None else np.nan for row in rows]
+    f1_values = [float(row['f1']) for row in rows]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(snrs, pd_values, marker='o', linewidth=2, label='Pd')
+    ax.plot(snrs, pfa_values, marker='s', linewidth=2, label='Pfa')
+    ax.plot(snrs, auc_values, marker='^', linewidth=2, label='AUC')
+    ax.plot(snrs, f1_values, marker='D', linewidth=2, label='F1-Score')
+    ax.set_xlabel('Source SNR (dB)')
+    ax.set_ylabel('Score')
+    ax.set_ylim(0.0, 1.05)
+    ax.set_title('CNR-SenseNet Metrics by Source SNR')
+    ax.grid(True, linestyle='--', alpha=0.4)
+    ax.legend(ncol=4)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=220, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_snr_roc_curves(
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    snr_values: np.ndarray,
+    output_path: Path,
+) -> None:
+    unique_snrs = sorted(np.unique(snr_values))
+    colors = plt.cm.viridis(np.linspace(0.05, 0.95, len(unique_snrs)))
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    for color, snr_value in zip(colors, unique_snrs):
+        mask = snr_values == snr_value
+        snr_y = y_true[mask]
+        snr_scores = scores[mask]
+        if len(np.unique(snr_y)) < 2:
+            continue
+
+        fpr, tpr, _ = roc_curve(snr_y, snr_scores)
+        auc_value = safe_roc_auc(snr_y, snr_scores)
+        auc_label = f'{auc_value:.4f}' if auc_value is not None else 'NA'
+        ax.plot(
+            fpr,
+            tpr,
+            linewidth=1.8,
+            color=color,
+            label=f'SNR {int(snr_value):>3} dB (AUC={auc_label})',
+        )
+
+    ax.plot([0, 1], [0, 1], linestyle='--', color='#868e96', linewidth=1)
+    ax.set_xlabel('False Positive Rate')
+    ax.set_ylabel('True Positive Rate')
+    ax.set_title('ROC Curves by Source SNR')
+    ax.grid(True, linestyle='--', alpha=0.4)
+    ax.legend(loc='lower right', fontsize=8, ncol=2)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=220, bbox_inches='tight')
+    plt.close(fig)
+
+
 def maybe_save_checkpoint(model, output_path: Path, args, summary: dict) -> None:
     if not args.save_checkpoint:
         return
@@ -459,6 +521,8 @@ def main() -> None:
         'roc_pr_png': output_dir / f"{args.output_prefix}_roc_pr.png",
         'confusion_matrix_png': output_dir / f"{args.output_prefix}_confusion_matrix.png",
         'snr_metrics_png': output_dir / f"{args.output_prefix}_metrics_by_snr.png",
+        'snr_detection_curves_png': output_dir / f"{args.output_prefix}_snr_detection_curves.png",
+        'snr_roc_curves_png': output_dir / f"{args.output_prefix}_snr_roc_curves.png",
         'checkpoint_pt': output_dir / f"{args.output_prefix}_checkpoint.pt",
     }
 
@@ -516,6 +580,13 @@ def main() -> None:
         artifact_paths['confusion_matrix_png'],
     )
     plot_snr_metrics(snr_metrics, artifact_paths['snr_metrics_png'])
+    plot_snr_detection_curves(snr_metrics, artifact_paths['snr_detection_curves_png'])
+    plot_snr_roc_curves(
+        bundle.test_arrays['y'],
+        test_scores,
+        bundle.test_arrays['snr'],
+        artifact_paths['snr_roc_curves_png'],
+    )
     maybe_save_checkpoint(model, artifact_paths['checkpoint_pt'], args, summary)
 
     print(f'Output directory: {output_dir}')
