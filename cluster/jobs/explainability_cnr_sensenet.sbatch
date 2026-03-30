@@ -1,4 +1,4 @@
-﻿#!/bin/bash -l
+#!/bin/bash -l
 #SBATCH --job-name=cnr-explain
 #SBATCH --output=slurm-%x-%j.out
 
