@@ -2,7 +2,7 @@
 #SBATCH --job-name=cnr-explain
 #SBATCH --output=slurm-%x-%j.out
 
-set -euo pipefail
+set -eo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$HOME/CNR-SenseNet}"
 ENV_NAME="${ENV_NAME:-cnr-sensenet}"
@@ -17,7 +17,9 @@ mkdir -p "$(dirname "$CACHE_PATH")" "$OUTPUT_DIR"
 
 module load Miniforge3
 eval "$(conda shell.bash hook)"
+set +u
 conda activate "$ENV_NAME"
+set -u
 
 python -m project.explainability \
   --pkl-path "$PKL_PATH" \
