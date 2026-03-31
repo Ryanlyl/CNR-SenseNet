@@ -3,5 +3,14 @@ project/data/*.pkl
 project/data/**/*.pkl
 project/data/processed/*.npz
 
+# Keep the tracked plots placeholder, but ignore generated experiment outputs.
+project/plots/**
+!project/plots/
+!project/plots/.gitkeep
+project/results/
+
+# Cluster/runtime byproducts.
+slurm-*.out
+
 __pycache__/
 *.pyc
