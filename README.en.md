@@ -39,6 +39,7 @@ CNR-SenseNet/
 |  |- robustness.py             # robustness evaluation
 |  |- plots/                    # generated figures
 |  `- results/                  # search, ablation, robustness, and other outputs
+|- simulate/                   # simulation scaffold, unified archive schema, and scripts
 `- cluster/
    |- environment.yml           # Conda environment definition
    |- setup_env.sh              # cluster environment bootstrap
@@ -166,6 +167,20 @@ It covers:
 - model comparison, explainability, ablation, and robustness runs
 
 If your main goal is cluster reproduction, start with `cluster/README.md`.
+
+## Simulation Scaffold
+
+The repository now includes a top-level `simulate/` package for future dataset augmentation work:
+
+- `simulate/schema.py` defines a unified archive format that stays compatible with the current `project/data/*.npz` pipeline.
+- `simulate/scripts/generate_sim_archive.py` creates a minimal runnable simulation archive.
+- `simulate/scripts/merge_with_rml.py` merges simulated archives with real cached archives.
+
+The design keeps the existing training-critical keys untouched:
+`X / y / snr / mod / label_snr / source_snr / sample_type / noise_power`
+
+It then adds simulation metadata keys for traceability:
+`domain / scenario / generator / channel_type / interference_type / sample_id / sim_seed`
 
 ## Notes
 

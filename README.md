@@ -39,6 +39,7 @@ CNR-SenseNet/
 |  |- robustness.py             # 鲁棒性评估
 |  |- plots/                    # 图表输出
 |  `- results/                  # 搜索、消融、鲁棒性等结果
+|- simulate/                   # 仿真增强骨架、统一数据格式与脚本入口
 `- cluster/
    |- environment.yml           # Conda 环境定义
    |- setup_env.sh              # Cluster 环境初始化脚本
@@ -166,6 +167,20 @@ python -m project.evaluate \
 - 模型对比、可解释性、消融与鲁棒性评估
 
 如需直接按 GPU Cluster 复现，优先阅读 `cluster/README.md`。
+
+## 仿真增强骨架
+
+仓库现在已经包含一个新的 `simulate/` 目录，用于后续扩展仿真数据增强流程：
+
+- `simulate/schema.py`：定义与当前 `project/data/*.npz` 兼容的统一 archive 格式。
+- `simulate/scripts/generate_sim_archive.py`：生成最小可运行的仿真 archive。
+- `simulate/scripts/merge_with_rml.py`：将仿真 archive 与真实 archive 合并为混合数据集。
+
+当前设计原则是：
+
+- 保留现有训练脚本依赖的核心字段：`X / y / snr / mod / label_snr / source_snr / sample_type / noise_power`
+- 追加仿真扩展字段：`domain / scenario / generator / channel_type / interference_type / sample_id / sim_seed`
+- 先把仿真数据独立落盘，再通过合并脚本接入现有训练流水线，避免直接污染主测试集
 
 ## 适合谁使用
 
