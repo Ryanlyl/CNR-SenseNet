@@ -1,4 +1,4 @@
-# Cluster Runbook
+﻿# Cluster Runbook
 
 This repository now includes a minimal cluster workflow that matches the NTU EEE GPU cluster rules:
 
@@ -179,7 +179,34 @@ SEEDS="52 62 72" OUTPUT_DIR=~/CNR-SenseNet/project/results/cnr_sensenet_multisee
 sbatch --gpus=a5000:1 --time=06:00:00 cluster/jobs/train_cnr_sensenet_multiseed.sbatch
 ```
 
-## 10. Run Multi-Model Comparison
+## 10. Run Robustness Evaluation
+
+This job trains the clean `cnr_sensenet` model once, then evaluates the saved threshold under the configured test-time perturbations.
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/robustness_cnr_sensenet.sbatch
+```
+
+Outputs are written under `project/results/cnr_sensenet_robustness/`.
+
+Recommended paper-facing file names inside that directory are:
+
+- `cnr_sensenet_robustness_table_robustness_1_overall.csv`
+- `cnr_sensenet_robustness_table_robustness_2_by_snr.csv`
+- `cnr_sensenet_robustness_figure_robustness_1_main.png`
+- `cnr_sensenet_robustness_figure_robustness_2_worst_case_snr.png`
+
+You can override the perturbation grid or output directory with environment variables, for example:
+
+```bash
+OUTPUT_DIR=~/CNR-SenseNet/project/results/cnr_sensenet_robustness_impulse_sweep \
+AWGN_STD_VALUES="0.05 0.1 0.2 0.4" \
+IMPULSE_PROB_VALUES="0.01 0.05 0.1 0.15" \
+sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/robustness_cnr_sensenet.sbatch
+```
+
+## 11. Run Multi-Model Comparison
 
 ```bash
 cd ~/CNR-SenseNet
@@ -188,7 +215,7 @@ sbatch --gpus=a5000:1 --time=12:00:00 cluster/jobs/model_comparison.sbatch --epo
 
 Outputs are written under `project/plots/model_comparison/`.
 
-## 11. Evaluate A Saved Checkpoint
+## 12. Evaluate A Saved Checkpoint
 
 `project/evaluate.py` now supports checkpoint evaluation for saved `.pt` files.
 
@@ -217,7 +244,7 @@ sbatch --gpus=v100:1 --time=01:00:00 cluster/jobs/evaluate_checkpoint.sbatch \
   --threshold 0.55 --test-ratio 0.2 --val-ratio 0.1 --seed 42
 ```
 
-## 12. Watch Jobs And Inspect Logs
+## 13. Watch Jobs And Inspect Logs
 
 ```bash
 squeue -u $USER
@@ -226,6 +253,7 @@ tail -f slurm-cnr-train-<jobid>.out
 tail -f slurm-cnr-search-<jobid>.out
 tail -f slurm-cnr-search-r2-<jobid>.out
 tail -f slurm-cnr-multiseed-<jobid>.out
+tail -f slurm-cnr-robust-<jobid>.out
 ```
 
 The cluster docs also recommend using Slurm commands such as:
@@ -234,7 +262,7 @@ The cluster docs also recommend using Slurm commands such as:
 sacct -j <jobid>
 ```
 
-## 13. Copy Results Back To Local
+## 14. Copy Results Back To Local
 
 Local PowerShell:
 
@@ -246,6 +274,11 @@ scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/baseli
 ```powershell
 scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/plots/cnr_sensenet_eval `
   D:\Dissertation\Code\CNR-SenseNet\project\plots\cnr_sensenet_eval_cluster
+```
+
+```powershell
+scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/cnr_sensenet_robustness `
+  D:\Dissertation\Code\CNR-SenseNet\project\results\cnr_sensenet_robustness_cluster
 ```
 
 ```powershell

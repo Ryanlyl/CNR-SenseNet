@@ -1,4 +1,4 @@
-# CNR-SenseNet
+﻿# CNR-SenseNet
 
 当前仓库以 `RML2016.10a` 为基础，围绕二分类 `signal vs noise` 检测任务搭建了一套统一的数据、模型和实验框架。现阶段重点是：
 
@@ -355,17 +355,27 @@ python -m project.evaluate --checkpoint project/plots/cnr_sensenet_eval/cnr_sens
 
 ### 4. `project/ablation.py`
 
-目前还是占位入口，后续计划用于：
+当前已经是可运行的消融实验入口，用于：
 
-- 跑模块消融
-- 导出 ablation table
+- 跑 `CNR-SenseNet` 全量模型与去分支变体
+- 导出 overall / by-SNR / by-band 指标表
+- 生成 ablation 对比图
 
 ### 5. `project/robustness.py`
 
-目前还是占位入口，后续计划用于：
+当前已经是可运行的鲁棒性实验入口，用于：
 
-- 跑鲁棒性实验
-- 导出 robustness table / plots
+- 训练 clean `CNR-SenseNet` 主模型
+- 在固定阈值下评估 `extra_awgn / phase_rotation / gain_imbalance / impulsive_noise`
+- 导出按论文引用顺序统一命名的产物：
+- `<prefix>_table_robustness_1_overall.csv`：总体 robustness 表
+- `<prefix>_table_robustness_2_by_snr.csv`：按 SNR 展开的 robustness 表
+- `<prefix>_figure_robustness_1_main.png`：主鲁棒性曲线图
+- `<prefix>_figure_robustness_2_worst_case_snr.png`：最坏扰动强度下的 SNR 退化图
+- `<prefix>_diagnostic_training.png`：训练诊断图（不建议作为主论文图）
+- `<prefix>_summary.json` / `<prefix>_checkpoint.pt`：实验摘要与模型权重
+
+当前仓库里还没有论文正文文件，因此这里先统一用 `robustness_1 / robustness_2` 作为稳定编号占位；后续映射到最终章节号时，不需要再改实验脚本和结果文件名。
 
 ### 6. `project/utils.py`
 
@@ -502,6 +512,29 @@ cd ~/CNR-SenseNet
 sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/train_cnr_sensenet.sbatch --epochs 20 --batch-size 2048
 ```
 
+跑鲁棒性实验：
+
+```bash
+cd ~/CNR-SenseNet
+sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/robustness_cnr_sensenet.sbatch
+```
+
+默认正式结果目录建议固定为：
+
+- `~/CNR-SenseNet/project/results/cnr_sensenet_robustness/`
+- `cnr_sensenet_robustness_table_robustness_1_overall.csv`
+- `cnr_sensenet_robustness_table_robustness_2_by_snr.csv`
+- `cnr_sensenet_robustness_figure_robustness_1_main.png`
+- `cnr_sensenet_robustness_figure_robustness_2_worst_case_snr.png`
+
+如果你想改扰动强度或输出目录，也可以在提交前覆盖环境变量：
+
+```bash
+OUTPUT_DIR=~/CNR-SenseNet/project/results/cnr_sensenet_robustness_impulse_sweep \
+IMPULSE_PROB_VALUES="0.01 0.05 0.1 0.15" \
+sbatch --gpus=a5000:1 --time=08:00:00 cluster/jobs/robustness_cnr_sensenet.sbatch
+```
+
 跑多模型对比：
 
 ```bash
@@ -530,24 +563,32 @@ sbatch --gpus=a5000:1 --time=01:00:00 cluster/jobs/evaluate_checkpoint.sbatch \
 
 ### 6. 查看任务和下载结果
 
-查看队列和日志：
+查看队列：
 
 ```bash
 squeue -u $USER
-tail -f slurm-cnr-train-<jobid>.out
 sacct -j <jobid>
 ```
 
-把结果拉回本地：
+下载 baseline 结果：
 
 ```powershell
 scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/baselines `
   D:\Dissertation\Code\CNR-SenseNet\project\results\cluster-baselines
 ```
 
+下载 `CNR-SenseNet` 主实验结果：
+
 ```powershell
 scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/plots/cnr_sensenet_eval `
   D:\Dissertation\Code\CNR-SenseNet\project\plots\cnr_sensenet_eval_cluster
+```
+
+下载 robustness 结果：
+
+```powershell
+scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/results/cnr_sensenet_robustness `
+  D:\Dissertation\Code\CNR-SenseNet\project\results\cnr_sensenet_robustness_cluster
 ```
 
 更完整的 cluster 说明见 `cluster/README.md`。
@@ -557,15 +598,13 @@ scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/plots/cnr_sens
 已经可用：
 
 - 原始 `RML2016.10a` 到融合数据集的构建与缓存
-- 带 `mod / label_snr / source_snr` 的标签设计
-- 代表性样本可视化导出为 PNG / PDF
-- `ED` 传统基线
-- checkpoint 复评入口 `project/evaluate.py`
+- baseline 训练、`CNR-SenseNet` 主训练与 checkpoint 复评
 - `MLP / CNN1D / LSTM / CNR-SenseNet` 深度学习训练框架
+- explainability、ablation、robustness 三条实验入口
 - cluster 环境和 `sbatch` 提交脚本
 
 仍待继续：
 
-- `ablation.py`
-- `robustness.py`
 - 主结果表、主结果图的统一自动导出
+- 更多自动化 smoke / CI
+- 论文最终版实验清单收口
