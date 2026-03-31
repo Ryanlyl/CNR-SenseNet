@@ -12,7 +12,6 @@ MODEL_REGISTRY = {
     "mlp": ("project.models.mlp", "MLPModel"),
     "cnn1d": ("project.models.cnn1d", "CNN1DModel"),
     "lstm": ("project.models.lstm", "LSTMModel"),
-    "cn_lssnet": ("project.models.cn_lssnet", "CNLSSNetModel"),
 }
 
 

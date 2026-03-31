@@ -25,7 +25,13 @@ from project.utils import resolve_path
 DEFAULT_OUTPUT_DIR = resolve_path("plots", "cnr_sensenet_explainability")
 SMOKE_OUTPUT_DIR = resolve_path("plots", "cnr_sensenet_explainability_smoke")
 BRANCH_NAMES = ("raw", "energy", "diff")
-BRANCH_LABELS = {"raw": "Raw Branch", "energy": "Energy Branch", "diff": "Diff Branch"}
+
+
+def get_branch_labels(aux_branch_type: str) -> dict[str, str]:
+    aux_label = "Autocorr Branch" if str(aux_branch_type).strip().lower() == "autocorr" else "Diff Branch"
+    return {"raw": "Raw Branch", "energy": "Energy Branch", "diff": aux_label}
+
+
 BRANCH_COLORS = {"raw": "#1c7ed6", "energy": "#e8590c", "diff": "#2b8a3e"}
 
 
@@ -47,6 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--energy-window", type=int, default=8)
+    parser.add_argument("--aux-branch-type", choices=["diff", "autocorr"], default="autocorr")
+    parser.add_argument("--autocorr-max-lag", type=int, default=8)
     parser.add_argument("--threshold-mode", choices=["fixed", "balanced_acc", "youden", "target_pfa"], default="balanced_acc")
     parser.add_argument("--target-pfa", type=float, default=0.1)
     parser.add_argument("--calibration-split", choices=["train", "val"], default="val")
@@ -174,7 +182,7 @@ def build_branch_feature_dict(backbone, x: torch.Tensor) -> dict[str, torch.Tens
     if backbone.use_energy_branch:
         features["energy"] = backbone.energy_branch(backbone.compute_local_energy(x_iq))
     if backbone.use_diff_branch:
-        features["diff"] = backbone.diff_branch(backbone.compute_diff(x_iq))
+        features["diff"] = backbone.diff_branch(backbone.compute_aux_features(x_iq))
     return features
 
 
@@ -195,6 +203,7 @@ def compute_branch_contribution_rows(model, arrays: dict[str, np.ndarray], thres
     backbone = model.model
     if backbone is None:
         raise RuntimeError("Backbone is not initialized.")
+    branch_labels = get_branch_labels(getattr(backbone, "aux_branch_type", "diff"))
     loader = DataLoader(TensorDataset(torch.from_numpy(arrays["X"]), torch.from_numpy(arrays["y"]), torch.from_numpy(arrays["snr"])), batch_size=model.batch_size, shuffle=False)
     branch_names = [name for name in BRANCH_NAMES if getattr(backbone, f"use_{name}_branch")]
     all_scores: list[np.ndarray] = []
@@ -230,7 +239,7 @@ def compute_branch_contribution_rows(model, arrays: dict[str, np.ndarray], thres
             selected_values = score_drop[selected_mask]
             rows.append({
                 "branch": branch_name,
-                "branch_label": BRANCH_LABELS[branch_name],
+                "branch_label": branch_labels[branch_name],
                 "snr": int(snr_value),
                 "count": int(np.sum(selected_mask)),
                 "selection": selection_source,
@@ -247,7 +256,7 @@ def compute_branch_contribution_rows(model, arrays: dict[str, np.ndarray], thres
     }
 
 
-def plot_branch_contributions(rows: list[dict], output_path: Path) -> None:
+def plot_branch_contributions(rows: list[dict], output_path: Path, branch_labels: dict[str, str]) -> None:
     fig, ax = plt.subplots(figsize=(10, 6))
     for branch_name in BRANCH_NAMES:
         branch_rows = [row for row in rows if row["branch"] == branch_name]
@@ -257,7 +266,7 @@ def plot_branch_contributions(rows: list[dict], output_path: Path) -> None:
         snrs = [int(row["snr"]) for row in branch_rows]
         means = [float(row["mean_score_drop"]) for row in branch_rows]
         stds = [float(row["std_score_drop"]) for row in branch_rows]
-        ax.plot(snrs, means, marker="o", linewidth=2.2, label=BRANCH_LABELS[branch_name], color=BRANCH_COLORS[branch_name])
+        ax.plot(snrs, means, marker="o", linewidth=2.2, label=branch_labels[branch_name], color=BRANCH_COLORS[branch_name])
         ax.fill_between(snrs, np.asarray(means) - np.asarray(stds), np.asarray(means) + np.asarray(stds), alpha=0.15, color=BRANCH_COLORS[branch_name])
     ax.axhline(0.0, color="#868e96", linewidth=1.0, linestyle="--")
     ax.set_xlabel("Source SNR (dB)")
@@ -476,6 +485,8 @@ def maybe_save_checkpoint(model, output_path: Path, args, summary: dict) -> None
             "signal_length": summary["dataset"]["input_dim"],
             "energy_window": args.energy_window,
             "dropout": args.dropout,
+            "aux_branch_type": args.aux_branch_type,
+            "autocorr_max_lag": args.autocorr_max_lag,
             "lr": args.lr,
             "batch_size": args.batch_size,
             "epochs": args.epochs,
@@ -546,6 +557,8 @@ def main() -> None:
         signal_length=bundle.input_dim,
         energy_window=args.energy_window,
         dropout=args.dropout,
+        aux_branch_type=args.aux_branch_type,
+        autocorr_max_lag=args.autocorr_max_lag,
         lr=args.lr,
         batch_size=args.batch_size,
         epochs=args.epochs,
@@ -590,9 +603,10 @@ def main() -> None:
 
     explain_start = time.perf_counter()
     branch_rows, branch_meta = compute_branch_contribution_rows(model, test_arrays, threshold=threshold)
+    branch_labels = get_branch_labels(getattr(model.model, "aux_branch_type", args.aux_branch_type))
     branch_fig_path = output_dir / f"{args.output_prefix}_branch_contribution_by_snr.png"
     branch_csv_path = output_dir / f"{args.output_prefix}_branch_contribution_by_snr.csv"
-    plot_branch_contributions(branch_rows, branch_fig_path)
+    plot_branch_contributions(branch_rows, branch_fig_path, branch_labels=branch_labels)
     write_csv(branch_csv_path, branch_rows)
 
     occlusion_matrix, snr_levels, occlusion_rows = compute_occlusion_matrix(model, test_arrays, predictions, args.energy_window)
@@ -612,6 +626,14 @@ def main() -> None:
         "model": "cnr_sensenet",
         "seed": int(args.seed),
         "device": str(model.device),
+        "model_config": {
+            "energy_window": int(args.energy_window),
+            "aux_branch_type": getattr(model.model, "aux_branch_type", args.aux_branch_type),
+            "autocorr_max_lag": int(getattr(model.model, "autocorr_max_lag", args.autocorr_max_lag)),
+            "threshold_mode": args.threshold_mode,
+            "calibration_split": args.calibration_split,
+            "snr_loss_weighting": args.snr_loss_weighting,
+        },
         "overall_metrics": metrics,
         "dataset": {
             "input_dim": int(bundle.input_dim),

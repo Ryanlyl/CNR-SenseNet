@@ -29,6 +29,8 @@ python -m project.explainability \
   --seed "$SEED" \
   --device cuda \
   --save-checkpoint \
+  --aux-branch-type autocorr \
+  --autocorr-max-lag 8 \
   --lr 1e-3 \
   --weight-decay 0.0 \
   --dropout 0.2 \

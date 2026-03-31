@@ -25,7 +25,6 @@ project/
     mlp.py
     cnn1d.py
     lstm.py
-    cn_lssnet.py
   CNR_SenseNet.py
   train.py
   run_cnr_sensenet_eval.py
@@ -209,7 +208,6 @@ model = create_model("mlp", epochs=5, batch_size=1024)
 - `cnn1d`
 - `lstm`
 - `cnr_sensenet`
-- `cn_lssnet`
 
 ### 3. `project/models/ed.py`
 
@@ -285,9 +283,7 @@ LSTM 基线，会把 `[256]` 重塑成 `128 x 2` 的 IQ 序列再建模。
 - `project/run_cnr_sensenet_eval.py`
 
 ### 9. `project/models/cn_lssnet.py`
-
-目前还是占位文件，接口已经保留，但还没有实现。
-
+This file remains as an archived placeholder only. It is no longer registered in `project.models` and is not part of the current experiment pipeline.
 ## 训练和实验入口怎么用
 
 ### 1. `project/train.py`
@@ -570,7 +566,6 @@ scp -r <cluster-user>@<cluster-login-host>:~/CNR-SenseNet/project/plots/cnr_sens
 
 仍待继续：
 
-- `CN-LSSNet` 实现
 - `ablation.py`
 - `robustness.py`
 - 主结果表、主结果图的统一自动导出
